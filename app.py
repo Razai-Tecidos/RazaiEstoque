@@ -15,7 +15,11 @@ from difflib import SequenceMatcher
 # ==========================
 # Configurações Gerais
 # ==========================
-BASE_URL = "https://partner.shopeemobile.com/api/v2"
+# Conforme a documentação da Shopee Open Platform v2, o host base não inclui
+# o caminho "/api/v2"; esse prefixo faz parte do path de cada endpoint.
+# Mantemos apenas o domínio aqui para evitar URLs do tipo
+# ".../api/v2/api/v2/product/...", que resultam em HTTP 404.
+BASE_URL = "https://partner.shopeemobile.com"
 GROUPS_FILE = "groups.json"
 CREDS_FILE = "razaiestoque.txt"
 
@@ -150,7 +154,8 @@ class ShopeeClient:
     def _sign(self, path: str, timestamp: int) -> str:
         """Gera assinatura HMAC-SHA256 conforme documentação Shopee v2.
 
-        path deve ser somente o caminho, ex: "/api/v2/product/get_item_list".
+        path deve ser somente o caminho absoluto da API, ex:
+        "/api/v2/product/get_item_list".
         """
         base_string = f"{self.partner_id}{path}{timestamp}{self.access_token}{self.shop_id}"
         digest = hmac.new(
@@ -230,6 +235,7 @@ class ShopeeClient:
             # Status típicos: NORMAL, UNLIST, BANNED; ajustável conforme necessidade
             item_status = ["NORMAL", "UNLIST"]
 
+        # Path completo incluindo "/api/v2" conforme docs de Product > Get Item List
         path = "/api/v2/product/get_item_list"
         offset = 0
         page_size = 100
@@ -259,6 +265,7 @@ class ShopeeClient:
 
         Ver docs: Product > Get Model List (Shopee Open Platform v2).
         """
+        # Path completo incluindo "/api/v2" conforme docs de Get Model List
         path = "/api/v2/product/get_model_list"
         params = {"item_id": int(item_id)}
         data = self._make_request("GET", path, params=params)
@@ -278,6 +285,7 @@ class ShopeeClient:
 
         Ver docs: Product > Update Stock (Shopee Open Platform v2).
         """
+        # Path completo incluindo "/api/v2" conforme docs de Update Stock
         path = "/api/v2/product/update_stock"
         body: Dict[str, Any] = {"item_id": int(item_id)}
 
