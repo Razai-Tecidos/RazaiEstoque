@@ -19,6 +19,11 @@ from difflib import SequenceMatcher
 # o caminho "/api/v2"; esse prefixo faz parte do path de cada endpoint.
 # Mantemos apenas o domínio aqui para evitar URLs do tipo
 # ".../api/v2/api/v2/product/...", que resultam em HTTP 404.
+#
+# Por padrão usamos o host de produção. Para testes em sandbox, o usuário pode
+# sobrescrever esse valor pela própria interface (campo "API Base URL" na
+# barra lateral) com o domínio de sandbox indicado na documentação da Shopee
+# ou observado no API Test Tool.
 BASE_URL = "https://partner.shopeemobile.com"
 GROUPS_FILE = "groups.json"
 CREDS_FILE = "razaiestoque.txt"
@@ -418,6 +423,8 @@ def init_session_state() -> None:
         st.session_state["models_cache"] = []
     if "last_sync_ts" not in st.session_state:
         st.session_state["last_sync_ts"] = None
+    if "api_base_url" not in st.session_state:
+        st.session_state["api_base_url"] = BASE_URL
 
 
 def sidebar_setup() -> None:
@@ -444,6 +451,17 @@ def sidebar_setup() -> None:
         "Access Token", type="password", key="access_token"
     )
 
+    with st.sidebar.expander("Opções avançadas (API)"):
+        api_base_url = st.text_input(
+            "API Base URL",
+            key="api_base_url",
+            help=(
+                "Host base da API Shopee. Por padrão usa produção. "
+                "Para sandbox, informe o domínio indicado na documentação/"
+                "API Test Tool, por exemplo o host de sandbox v2."
+            ),
+        )
+
     st.sidebar.caption(
         "As credenciais não são salvas em disco; apenas em sessão."
     )
@@ -458,6 +476,7 @@ def sidebar_setup() -> None:
                     partner_key=partner_key,
                     shop_id=int(shop_id),
                     access_token=access_token,
+                    base_url=api_base_url or BASE_URL,
                 )
                 with st.spinner("Sincronizando itens e variações da Shopee..."):
                     models_cache = build_models_cache(client)
