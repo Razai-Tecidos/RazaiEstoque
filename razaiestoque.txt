@@ -1,0 +1,6 @@
+RazaiEstoque
+
+Test API Partner Key: shpk614d474f6e544d424e5564424f6b75715744734e67444472727674667944
+Test Partner_id:1202356
+App Category: Seller In House System
+App Status: Developing
