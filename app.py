@@ -190,6 +190,7 @@ def load_credentials_from_env() -> Dict[str, Any]:
     - SHOPEE_SHOP_ID
     - SHOPEE_ACCESS_TOKEN
     - SHOPEE_REFRESH_TOKEN
+    - SHOPEE_REDIRECT_URL
     - SHOPEE_API_BASE_URL
     """
     mapping = {
@@ -198,6 +199,7 @@ def load_credentials_from_env() -> Dict[str, Any]:
         "shop_id": "SHOPEE_SHOP_ID",
         "access_token": "SHOPEE_ACCESS_TOKEN",
         "refresh_token": "SHOPEE_REFRESH_TOKEN",
+        "redirect_url": "SHOPEE_REDIRECT_URL",
         "api_base_url": "SHOPEE_API_BASE_URL",
     }
     creds: Dict[str, Any] = {}
@@ -220,6 +222,7 @@ def load_credentials_from_streamlit_secrets() -> Dict[str, Any]:
     - SHOPEE_SHOP_ID = "..."
     - SHOPEE_ACCESS_TOKEN = "..."  (opcional; preferível obter via OAuth)
     - SHOPEE_REFRESH_TOKEN = "..." (recomendado; permite login sem reautorizar)
+    - SHOPEE_REDIRECT_URL = "https://razaiestoque.streamlit.app/" (precisa bater com o Redirect URL do Open Platform)
     - SHOPEE_API_BASE_URL = "https://openplatform.shopee.com.br"
     """
     try:
@@ -246,6 +249,7 @@ def load_credentials_from_streamlit_secrets() -> Dict[str, Any]:
     shop_id = _get("SHOPEE_SHOP_ID", "shop_id")
     access_token = _get("SHOPEE_ACCESS_TOKEN", "access_token")
     refresh_token = _get("SHOPEE_REFRESH_TOKEN", "refresh_token")
+    redirect_url = _get("SHOPEE_REDIRECT_URL", "redirect_url", "redirect_uri")
     api_base_url = _get("SHOPEE_API_BASE_URL", "api_base_url")
 
     if partner_id:
@@ -258,6 +262,8 @@ def load_credentials_from_streamlit_secrets() -> Dict[str, Any]:
         creds["access_token"] = access_token
     if refresh_token:
         creds["refresh_token"] = refresh_token
+    if redirect_url:
+        creds["redirect_url"] = redirect_url
     if api_base_url:
         creds["api_base_url"] = api_base_url
 
@@ -376,10 +382,12 @@ class ShopeeClient:
 
     # ---------- OAuth / Token ----------
 
-    def exchange_code_for_token(self, code: str, shop_id: int) -> Dict[str, Any]:
+    def exchange_code_for_token(self, code: str, shop_id: int, redirect_uri: Optional[str] = None) -> Dict[str, Any]:
         """Troca `code` por access_token/refresh_token (v2.public.get_access_token)."""
         path = "/api/v2/auth/token/get"
         body = {"partner_id": self.partner_id, "code": str(code), "shop_id": int(shop_id)}
+        if redirect_uri:
+            body["redirect_uri"] = str(redirect_uri)
         return self._make_partner_request("POST", path, body=body)
 
     def refresh_access_token(self, refresh_token: str, shop_id: int) -> Dict[str, Any]:
@@ -661,6 +669,8 @@ def init_session_state() -> None:
         st.session_state["_auto_token_bootstrap_done"] = False
     if "_last_oauth_code_exchanged" not in st.session_state:
         st.session_state["_last_oauth_code_exchanged"] = ""
+    if "redirect_url" not in st.session_state:
+        st.session_state["redirect_url"] = "https://razaiestoque.streamlit.app/"
 
 
 def sidebar_setup() -> None:
@@ -755,6 +765,8 @@ def sidebar_setup() -> None:
             st.session_state["access_token"] = str(source["access_token"])
         if source.get("refresh_token") and not st.session_state.get("refresh_token"):
             st.session_state["refresh_token"] = str(source["refresh_token"])
+        if source.get("redirect_url") and not st.session_state.get("redirect_url"):
+            st.session_state["redirect_url"] = str(source["redirect_url"])
         if source.get("api_base_url") and not st.session_state.get("api_base_url"):
             st.session_state["api_base_url"] = str(source["api_base_url"])
 
@@ -913,6 +925,15 @@ def sidebar_setup() -> None:
             "O token é salvo apenas na sessão do Streamlit."
         )
 
+        redirect_url = st.text_input(
+            "Redirect URL (Live)",
+            key="redirect_url",
+            help=(
+                "Precisa bater exatamente com o Redirect URL usado no 'Authorize Live Partner'. "
+                "Recomendado: https://razaiestoque.streamlit.app/"
+            ),
+        )
+
         # Ajuda de copy/paste para Secrets
         if str(st.session_state.get("refresh_token") or "").strip():
             rt_for_copy = str(st.session_state.get("refresh_token") or "").strip()
@@ -956,6 +977,7 @@ def sidebar_setup() -> None:
                         token_data = tmp_client.exchange_code_for_token(
                             code=code_to_exchange,
                             shop_id=int(oauth_shop_id.strip()),
+                            redirect_uri=str(redirect_url or "").strip() or None,
                         )
 
                     st.session_state["_last_oauth_code_exchanged"] = code_to_exchange
