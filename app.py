@@ -663,6 +663,21 @@ def init_session_state() -> None:
         st.session_state["api_region"] = "Brasil"
     if "refresh_token" not in st.session_state:
         st.session_state["refresh_token"] = ""
+    if "shop_id" not in st.session_state:
+        st.session_state["shop_id"] = ""
+    if "access_token" not in st.session_state:
+        st.session_state["access_token"] = ""
+    # Widgets usam chaves separadas para evitar erro ao atualizar tokens após interações.
+    if "shop_id_input" not in st.session_state:
+        st.session_state["shop_id_input"] = ""
+    if "access_token_input" not in st.session_state:
+        st.session_state["access_token_input"] = ""
+    if "refresh_token_input" not in st.session_state:
+        st.session_state["refresh_token_input"] = ""
+    if "_sync_token_inputs" not in st.session_state:
+        st.session_state["_sync_token_inputs"] = False
+    if "_flash_sidebar" not in st.session_state:
+        st.session_state["_flash_sidebar"] = ""
     if "last_token_refresh_ts" not in st.session_state:
         st.session_state["last_token_refresh_ts"] = None
     if "_auto_token_bootstrap_done" not in st.session_state:
@@ -709,6 +724,14 @@ def sidebar_setup() -> None:
         st.session_state["oauth_code"] = qp_code
     if qp_shop_id and qp_shop_id != str(st.session_state.get("oauth_shop_id") or ""):
         st.session_state["oauth_shop_id"] = qp_shop_id
+
+    # Se acabamos de atualizar tokens (OAuth/refresh), refletir nos inputs ANTES
+    # dos widgets serem instanciados.
+    if st.session_state.get("_sync_token_inputs"):
+        st.session_state["shop_id_input"] = str(st.session_state.get("shop_id") or "")
+        st.session_state["access_token_input"] = str(st.session_state.get("access_token") or "")
+        st.session_state["refresh_token_input"] = str(st.session_state.get("refresh_token") or "")
+        st.session_state["_sync_token_inputs"] = False
 
     # Se veio shop_id no redirect, isso é Live e ajuda a preencher automaticamente.
     if qp_shop_id and not file_creds.get("live_shop_id"):
@@ -770,6 +793,19 @@ def sidebar_setup() -> None:
         if source.get("api_base_url") and not st.session_state.get("api_base_url"):
             st.session_state["api_base_url"] = str(source["api_base_url"])
 
+    # Garantir que inputs iniciem com o estado interno (sem sobrescrever se usuário já digitou).
+    if not str(st.session_state.get("shop_id_input") or "").strip() and str(st.session_state.get("shop_id") or "").strip():
+        st.session_state["shop_id_input"] = str(st.session_state.get("shop_id") or "")
+    if not str(st.session_state.get("access_token_input") or "").strip() and str(st.session_state.get("access_token") or "").strip():
+        st.session_state["access_token_input"] = str(st.session_state.get("access_token") or "")
+    if not str(st.session_state.get("refresh_token_input") or "").strip() and str(st.session_state.get("refresh_token") or "").strip():
+        st.session_state["refresh_token_input"] = str(st.session_state.get("refresh_token") or "")
+
+    # Mensagens "flash" (aparecem uma vez)
+    if str(st.session_state.get("_flash_sidebar") or "").strip():
+        st.sidebar.success(str(st.session_state.get("_flash_sidebar") or ""))
+        st.session_state["_flash_sidebar"] = ""
+
     st.sidebar.caption(
         "Dica: em **Produção (Live)** use as credenciais LIVE do console Shopee e obtenha o token via OAuth. "
         "Em **Sandbox (Teste)** use as credenciais TEST + shop/token do sandbox."
@@ -792,18 +828,18 @@ def sidebar_setup() -> None:
             "Sandbox/Teste: use a **Test API Partner Key**."
         ),
     )
-    shop_id = st.sidebar.text_input(
+    shop_id_input = st.sidebar.text_input(
         "Shop ID",
-        key="shop_id",
+        key="shop_id_input",
         help=(
             "Produção/Live: use o **shop_id da sua loja real** (normalmente vem no redirect do OAuth). "
             "Sandbox/Teste: use o **Shop ID do sandbox**."
         ),
     )
-    access_token = st.sidebar.text_input(
+    access_token_input = st.sidebar.text_input(
         "Access Token",
         type="password",
-        key="access_token",
+        key="access_token_input",
         help=(
             "Produção/Live: é o **access_token LIVE** obtido ao trocar o `code` no bloco OAuth abaixo. "
             "Sandbox/Teste: use o token de teste (ex.: AccessTokenTest)."
@@ -812,15 +848,23 @@ def sidebar_setup() -> None:
 
     # Mostra o refresh_token para permitir salvar em Secrets (Streamlit Cloud).
     # Sem isso, o usuário não consegue persistir o token entre reinícios.
-    st.sidebar.text_input(
+    refresh_token_input = st.sidebar.text_input(
         "Refresh Token (Live)",
         type="password",
-        key="refresh_token",
+        key="refresh_token_input",
         help=(
             "Produção/Live: token de longa duração retornado no OAuth e/ou ao renovar. "
             "Recomendado salvar no Streamlit Cloud em Secrets como SHOPEE_REFRESH_TOKEN."
         ),
     )
+
+    # Sincroniza inputs -> estado interno (chaves internas não são widgets).
+    st.session_state["shop_id"] = str(shop_id_input or "").strip()
+    st.session_state["access_token"] = str(access_token_input or "").strip()
+    st.session_state["refresh_token"] = str(refresh_token_input or "").strip()
+
+    shop_id = st.session_state["shop_id"]
+    access_token = st.session_state["access_token"]
 
     with st.sidebar.expander("Opções avançadas (API)"):
         api_env = st.selectbox(
@@ -909,6 +953,9 @@ def sidebar_setup() -> None:
                 st.session_state["last_token_refresh_ts"] = int(time.time())
                 if st.session_state.get("access_token"):
                     st.success("Access token renovado automaticamente via refresh_token.")
+                    st.session_state["_flash_sidebar"] = "Access token renovado automaticamente via refresh_token."
+                    st.session_state["_sync_token_inputs"] = True
+                    st.rerun()
                 if new_rt and previous_rt and new_rt != previous_rt:
                     st.info(
                         "A Shopee rotacionou seu refresh_token. Atualize o Secrets do Streamlit Cloud com o novo valor:\n"
@@ -999,6 +1046,10 @@ def sidebar_setup() -> None:
                     st.session_state["refresh_token"] = str(token_data.get("refresh_token", ""))
                     st.session_state["last_token_refresh_ts"] = int(time.time())
 
+                    st.session_state["_flash_sidebar"] = "Token obtido com sucesso (OAuth)."
+                    st.session_state["_sync_token_inputs"] = True
+                    st.rerun()
+
                     if st.session_state["access_token"]:
                         st.success("Token obtido com sucesso. Agora clique em 'Sincronizar Dados da Shopee'.")
                         if st.session_state.get("refresh_token"):
@@ -1040,6 +1091,9 @@ def sidebar_setup() -> None:
                         st.session_state["refresh_token"] = new_rt
                     st.session_state["last_token_refresh_ts"] = int(time.time())
                     st.success("Access token renovado. Agora você pode sincronizar novamente.")
+                    st.session_state["_flash_sidebar"] = "Access token renovado (refresh_token)."
+                    st.session_state["_sync_token_inputs"] = True
+                    st.rerun()
                     if new_rt and previous_rt and new_rt != previous_rt:
                         st.info(
                             "A Shopee rotacionou seu refresh_token. Atualize o Secrets do Streamlit Cloud com o novo valor:\n"
