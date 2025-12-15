@@ -189,6 +189,7 @@ def load_credentials_from_env() -> Dict[str, Any]:
     - SHOPEE_PARTNER_KEY
     - SHOPEE_SHOP_ID
     - SHOPEE_ACCESS_TOKEN
+    - SHOPEE_REFRESH_TOKEN
     - SHOPEE_API_BASE_URL
     """
     mapping = {
@@ -196,6 +197,7 @@ def load_credentials_from_env() -> Dict[str, Any]:
         "partner_key": "SHOPEE_PARTNER_KEY",
         "shop_id": "SHOPEE_SHOP_ID",
         "access_token": "SHOPEE_ACCESS_TOKEN",
+        "refresh_token": "SHOPEE_REFRESH_TOKEN",
         "api_base_url": "SHOPEE_API_BASE_URL",
     }
     creds: Dict[str, Any] = {}
@@ -217,6 +219,7 @@ def load_credentials_from_streamlit_secrets() -> Dict[str, Any]:
     - SHOPEE_PARTNER_KEY = "..."
     - SHOPEE_SHOP_ID = "..."
     - SHOPEE_ACCESS_TOKEN = "..."  (opcional; preferível obter via OAuth)
+    - SHOPEE_REFRESH_TOKEN = "..." (recomendado; permite login sem reautorizar)
     - SHOPEE_API_BASE_URL = "https://openplatform.shopee.com.br"
     """
     try:
@@ -242,6 +245,7 @@ def load_credentials_from_streamlit_secrets() -> Dict[str, Any]:
     partner_key = _get("SHOPEE_PARTNER_KEY", "partner_key")
     shop_id = _get("SHOPEE_SHOP_ID", "shop_id")
     access_token = _get("SHOPEE_ACCESS_TOKEN", "access_token")
+    refresh_token = _get("SHOPEE_REFRESH_TOKEN", "refresh_token")
     api_base_url = _get("SHOPEE_API_BASE_URL", "api_base_url")
 
     if partner_id:
@@ -252,6 +256,8 @@ def load_credentials_from_streamlit_secrets() -> Dict[str, Any]:
         creds["shop_id"] = shop_id
     if access_token:
         creds["access_token"] = access_token
+    if refresh_token:
+        creds["refresh_token"] = refresh_token
     if api_base_url:
         creds["api_base_url"] = api_base_url
 
@@ -647,6 +653,8 @@ def init_session_state() -> None:
         st.session_state["refresh_token"] = ""
     if "last_token_refresh_ts" not in st.session_state:
         st.session_state["last_token_refresh_ts"] = None
+    if "_auto_token_bootstrap_done" not in st.session_state:
+        st.session_state["_auto_token_bootstrap_done"] = False
 
 
 def sidebar_setup() -> None:
@@ -736,6 +744,8 @@ def sidebar_setup() -> None:
             st.session_state["shop_id"] = str(source["shop_id"])
         if source.get("access_token") and not st.session_state.get("access_token"):
             st.session_state["access_token"] = str(source["access_token"])
+        if source.get("refresh_token") and not st.session_state.get("refresh_token"):
+            st.session_state["refresh_token"] = str(source["refresh_token"])
         if source.get("api_base_url") and not st.session_state.get("api_base_url"):
             st.session_state["api_base_url"] = str(source["api_base_url"])
 
@@ -833,6 +843,40 @@ def sidebar_setup() -> None:
                 icon="⚠️",
             )
 
+        # Auto-renovação: se houver refresh_token (Secrets/ENV), evita ter que reautorizar.
+        if (
+            api_env == "Produção"
+            and not st.session_state.get("_auto_token_bootstrap_done")
+            and not str(st.session_state.get("access_token") or "").strip()
+            and str(st.session_state.get("refresh_token") or "").strip()
+            and str(st.session_state.get("partner_id") or "").strip()
+            and str(st.session_state.get("partner_key") or "").strip()
+            and str(st.session_state.get("shop_id") or "").strip()
+            and str(st.session_state.get("api_base_url") or "").strip()
+        ):
+            try:
+                tmp_client = ShopeeClient(
+                    partner_id=int(st.session_state["partner_id"]),
+                    partner_key=str(st.session_state["partner_key"]),
+                    shop_id=0,
+                    access_token="",
+                    base_url=str(st.session_state["api_base_url"] or BASE_URL),
+                )
+                with st.spinner("Renovando access token automaticamente (refresh_token)..."):
+                    token_data = tmp_client.refresh_access_token(
+                        refresh_token=str(st.session_state.get("refresh_token") or "").strip(),
+                        shop_id=int(str(st.session_state.get("shop_id") or "0").strip()),
+                    )
+                st.session_state["access_token"] = str(token_data.get("access_token", ""))
+                st.session_state["refresh_token"] = str(token_data.get("refresh_token", st.session_state.get("refresh_token") or ""))
+                st.session_state["last_token_refresh_ts"] = int(time.time())
+                if st.session_state.get("access_token"):
+                    st.success("Access token renovado automaticamente via refresh_token.")
+            except Exception as exc:  # noqa: BLE001
+                st.warning(f"Não foi possível auto-renovar o token: {exc}")
+            finally:
+                st.session_state["_auto_token_bootstrap_done"] = True
+
         st.divider()
         st.markdown("**OAuth (Live) – trocar code por token**")
         st.caption(
@@ -880,6 +924,11 @@ def sidebar_setup() -> None:
 
                     if st.session_state["access_token"]:
                         st.success("Token obtido com sucesso. Agora clique em 'Sincronizar Dados da Shopee'.")
+                        if st.session_state.get("refresh_token"):
+                            st.info(
+                                "Para não precisar reautorizar no Open Platform toda vez, salve também o refresh_token no Streamlit Cloud em Secrets como: "
+                                "SHOPEE_REFRESH_TOKEN = \"...\""
+                            )
                     else:
                         st.warning("Resposta sem access_token. Verifique a resposta abaixo.")
                         st.json(token_data)
