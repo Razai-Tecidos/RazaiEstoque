@@ -734,6 +734,102 @@ def search_models(
     return [m for _, m in filtered]
 
 
+def _norm_text(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return " ".join(s.split())
+
+
+def suggest_master_name(models: List[Dict[str, Any]]) -> str:
+    """Sugere um Nome Mestre baseado em título/variação (heurística simples).
+
+    Objetivo: ajudar a padronizar por "tecido + estampa + cor" sem exigir que
+    o usuário digite tudo sempre.
+    """
+    if not models:
+        return ""
+
+    fabrics = [
+        "viscolinho",
+        "viscose",
+        "tricoline",
+        "crepe",
+        "linho",
+        "sarja",
+        "jeans",
+        "moletom",
+        "suede",
+        "cetim",
+        "tule",
+        "malha",
+        "ribana",
+        "neoprene",
+    ]
+
+    colors = [
+        "branco",
+        "preto",
+        "azul",
+        "vermelho",
+        "amarelo",
+        "verde",
+        "rosa",
+        "roxo",
+        "lilas",
+        "laranja",
+        "bege",
+        "nude",
+        "marrom",
+        "cinza",
+        "off white",
+        "offwhite",
+        "cru",
+    ]
+
+    patterns = [
+        "liso",
+        "estampado",
+        "floral",
+        "poa",
+        "bolinha",
+        "xadrez",
+        "listrado",
+        "animal print",
+        "onca",
+        "zebra",
+        "geometrico",
+        "folhagem",
+    ]
+
+    # Junta textos e normaliza (sem acento) para facilitar detecção
+    texts = [_norm_text(f"{m.get('item_name','')} {m.get('model_name','')}") for m in models]
+    full = " ".join(t for t in texts if t)
+
+    def _find_first(candidates: List[str]) -> str:
+        for c in candidates:
+            if c in full:
+                return c
+        return ""
+
+    fabric = _find_first(fabrics)
+    color = _find_first(colors)
+    pattern = _find_first(patterns)
+
+    # Montagem simples e legível
+    parts = [p for p in (fabric, pattern, color) if p]
+    if not parts:
+        # fallback: usa um prefixo do primeiro item
+        raw = str(models[0].get("item_name") or "").strip()
+        return raw[:60]
+
+    # title-case básico (mantendo palavras pequenas)
+    out = " ".join(parts)
+    out = " ".join(w.capitalize() if w not in {"de", "da", "do", "das", "dos", "e"} else w for w in out.split())
+    out = out.replace("Offwhite", "Off White")
+    return out
+
+
 # ==========================
 # UI com Streamlit
 # ==========================
@@ -1310,6 +1406,14 @@ def tab_mapping():
         options=options_keys,
         format_func=lambda k: f"{k} - {key_to_model[k]['display_name']}",
     )
+
+    # Sugestão automática baseada nos títulos (tecido + estampa + cor)
+    if st.button("Sugerir Nome Mestre pelos títulos"):
+        if selected_keys:
+            selected_models = [key_to_model[k] for k in selected_keys]
+            st.session_state["master_name_input"] = suggest_master_name(selected_models)
+        else:
+            st.warning("Selecione ao menos uma variação para sugerir o nome.")
 
     master_name = st.text_input(
         "Nome Mestre para o grupo (ex: 'Viscose Estampada Azul'):",
