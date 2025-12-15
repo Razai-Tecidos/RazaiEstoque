@@ -686,9 +686,12 @@ def sidebar_setup() -> None:
         qp_code = _qp_first(qp.get("code"))
         qp_shop_id = _qp_first(qp.get("shop_id"))
 
-    if qp_code and not st.session_state.get("oauth_code"):
+    # Importante: o `code` é uso único e expira rápido. Se o usuário reautorizar,
+    # ele chega com um NOVO code na URL. Então precisamos atualizar a sessão quando
+    # o query param mudar; caso contrário o app tenta trocar um code antigo e falha.
+    if qp_code and qp_code != str(st.session_state.get("oauth_code") or ""):
         st.session_state["oauth_code"] = qp_code
-    if qp_shop_id and not st.session_state.get("oauth_shop_id"):
+    if qp_shop_id and qp_shop_id != str(st.session_state.get("oauth_shop_id") or ""):
         st.session_state["oauth_shop_id"] = qp_shop_id
 
     # Se veio shop_id no redirect, isso é Live e ajuda a preencher automaticamente.
