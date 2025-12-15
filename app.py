@@ -382,6 +382,25 @@ class ShopeeClient:
 
     # ---------- OAuth / Token ----------
 
+    def build_authorize_url(self, redirect_url: str) -> str:
+        """Gera URL de autorização (Authorize Live Partner) para obter `code`.
+
+        Esse passo é o que gera o `code` (uso único) e redireciona para o `redirect_url`
+        com `?code=...&shop_id=...`.
+
+        Observação: o nome do parâmetro de callback no authorize é `redirect` (v2).
+        """
+        path = "/api/v2/shop/auth_partner"
+        ts = int(time.time())
+        sign = self._sign_partner_only(path, ts)
+        params = {
+            "partner_id": self.partner_id,
+            "timestamp": ts,
+            "sign": sign,
+            "redirect": str(redirect_url).strip(),
+        }
+        return f"{self.base_url}{path}?{urllib.parse.urlencode(params)}"
+
     def exchange_code_for_token(self, code: str, shop_id: int, redirect_uri: Optional[str] = None) -> Dict[str, Any]:
         """Troca `code` por access_token/refresh_token (v2.public.get_access_token)."""
         path = "/api/v2/auth/token/get"
@@ -991,6 +1010,27 @@ def sidebar_setup() -> None:
                 "Recomendado: https://razaiestoque.streamlit.app/"
             ),
         )
+
+        st.caption("Dica: gere o link de autorização aqui para evitar mismatch de host/app.")
+        if st.button("Gerar link de autorização (Authorize Live Partner)"):
+            if not (partner_id and partner_key and api_base_url):
+                st.error("Preencha Partner ID, Partner Key e API Base URL antes.")
+            elif not str(redirect_url or "").strip():
+                st.error("Preencha o Redirect URL (Live) antes.")
+            else:
+                try:
+                    tmp_client = ShopeeClient(
+                        partner_id=int(str(partner_id).strip()),
+                        partner_key=str(partner_key),
+                        shop_id=0,
+                        access_token="",
+                        base_url=str(api_base_url or BASE_URL),
+                    )
+                    auth_url = tmp_client.build_authorize_url(str(redirect_url).strip())
+                    st.write("Abra este link, autorize, e volte para o app com `?code=...&shop_id=...`:")
+                    st.code(auth_url)
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Falha ao gerar link de autorização: {exc}")
 
         # Ajuda de copy/paste para Secrets
         if str(st.session_state.get("refresh_token") or "").strip():
