@@ -1,0 +1,17 @@
+RazaiEstoque (EXEMPLO - NAO COMMITAR SEGREDOS)
+
+# Sandbox / Teste (opcional)
+Test API Partner Key: <cole_aqui>
+Test Partner_id: <cole_aqui>
+Shop ID: <shop_id_sandbox>
+AccessTokenTest: <access_token_sandbox>
+PartnerAPISandbox: https://openplatform.sandbox.test-stable.shopee.sg
+
+# Live / Producao (opcional)
+Live API Partner Key: <cole_aqui>
+Live Partner_id: <cole_aqui>
+Shop Live ID: <shop_id_live>
+redirect url: https://razaiestoque.streamlit.app/
+
+# Exemplo de redirect (apos autorizar no console):
+# https://razaiestoque.streamlit.app/?code=<code>&shop_id=<shop_id_live>

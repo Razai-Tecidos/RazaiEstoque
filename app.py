@@ -4,6 +4,7 @@ import hmac
 import json
 import uuid
 import hashlib
+import urllib.parse
 from typing import Dict, Any, List, Optional, Tuple
 
 import requests
@@ -20,11 +21,16 @@ from difflib import SequenceMatcher
 # Mantemos apenas o domínio aqui para evitar URLs do tipo
 # ".../api/v2/api/v2/product/...", que resultam em HTTP 404.
 #
-# Por padrão usamos o host de produção. Para testes em sandbox, o usuário pode
-# sobrescrever esse valor pela própria interface (campo "API Base URL" na
-# barra lateral) com o domínio de sandbox indicado na documentação da Shopee
-# ou observado no API Test Tool.
-BASE_URL = "https://partner.shopeemobile.com"
+# Por padrão usamos o host de produção do Brasil (Open Platform BR). A Shopee
+# mantém hosts diferentes por região (ex.: Brasil vs Global vs China).
+# Para lojas fora do BR, ajuste o host pela interface (campo "API Base URL").
+#
+# Referência (docs v2): URLs variam por região, ex.:
+# - Brasil: https://openplatform.shopee.com.br/api/v2/...
+# - Global: https://partner.shopeemobile.com/api/v2/...
+BASE_URL = "https://openplatform.shopee.com.br"
+GLOBAL_BASE_URL = "https://partner.shopeemobile.com"
+SANDBOX_BASE_URL = "https://openplatform.sandbox.test-stable.shopee.sg"
 GROUPS_FILE = "groups.json"
 CREDS_FILE = "razaiestoque.txt"
 
@@ -78,50 +84,177 @@ def save_groups(groups: List[Dict[str, Any]]) -> None:
 
 
 def load_test_credentials_from_file() -> Dict[str, Any]:
-    """Lê credenciais de teste do arquivo de texto local.
+    """Lê credenciais (Sandbox e Live) do arquivo de texto local.
 
     O arquivo `razaiestoque.txt` é tratado **somente para leitura**, nunca é
-    modificado. Usamos apenas campos de teste como:
+    modificado. Usamos campos conhecidos para preencher automaticamente a sidebar.
 
-    - "Test API Partner Key: ..."
-    - "Test Partner_id: ..."
-
-    Isso permite ter credenciais já disponíveis no sistema, sem expor nada na
-    aplicação além do preenchimento automático da sidebar.
+    Campos reconhecidos:
+    - Sandbox/Test: Test API Partner Key, Test Partner_id, Shop ID, AccessTokenTest
+    - Live/Produção: Live API Partner Key, Live Partner_id, Shop Live ID, redirect com shop_id
     """
     if not os.path.exists(CREDS_FILE):
         return {}
 
-    partner_key: Optional[str] = None
-    partner_id: Optional[str] = None
-    shop_id: Optional[str] = None
-    access_token: Optional[str] = None
+    def _value_after_colon(text: str) -> Optional[str]:
+        # Aceita ":" e "：" (dois pontos full-width, comum em cópias)
+        for sep in (":", "："):
+            if sep in text:
+                return text.split(sep, 1)[1].strip()
+        return None
+
+    test_partner_key: Optional[str] = None
+    test_partner_id: Optional[str] = None
+    test_shop_id: Optional[str] = None
+    test_access_token: Optional[str] = None
+
+    live_partner_key: Optional[str] = None
+    live_partner_id: Optional[str] = None
+    live_shop_id: Optional[str] = None
 
     try:
         with open(CREDS_FILE, "r", encoding="utf-8") as f:
             for raw_line in f:
                 line = raw_line.strip()
-                if line.lower().startswith("test api partner key:"):
-                    partner_key = line.split(":", 1)[1].strip()
-                elif line.lower().startswith("test partner_id:"):
-                    partner_id = line.split(":", 1)[1].strip()
-                elif line.lower().startswith("test shop_id:") or line.lower().startswith("test shop id:"):
-                    shop_id = line.split(":", 1)[1].strip()
-                elif line.lower().startswith("test access token:"):
-                    access_token = line.split(":", 1)[1].strip()
+                if not line:
+                    continue
+
+                lower = line.lower()
+
+                # Sandbox/Test
+                if lower.startswith("test api partner key"):
+                    test_partner_key = _value_after_colon(line) or test_partner_key
+                elif lower.startswith("test partner_id") or lower.startswith("test partner id"):
+                    test_partner_id = _value_after_colon(line) or test_partner_id
+                elif lower.startswith("shop id"):
+                    # No arquivo atual, "Shop ID" refere-se ao sandbox.
+                    test_shop_id = _value_after_colon(line) or test_shop_id
+                elif lower.startswith("accesstokentest"):
+                    test_access_token = _value_after_colon(line) or test_access_token
+                elif lower.startswith("test access token"):
+                    test_access_token = _value_after_colon(line) or test_access_token
+
+                # Live/Produção
+                elif lower.startswith("live api partner key"):
+                    live_partner_key = _value_after_colon(line) or live_partner_key
+                elif lower.startswith("live partner_id") or lower.startswith("live partner id"):
+                    live_partner_id = _value_after_colon(line) or live_partner_id
+                elif lower.startswith("shop live id"):
+                    value = (_value_after_colon(line) or "").strip()
+                    if value:
+                        live_shop_id = value
+                elif "shop_id=" in lower and lower.startswith("http"):
+                    # Ex.: https://.../?code=...&shop_id=803215808
+                    try:
+                        parsed = urllib.parse.urlparse(line)
+                        qs = urllib.parse.parse_qs(parsed.query)
+                        sid = (qs.get("shop_id") or [None])[0]
+                        if sid:
+                            live_shop_id = str(sid)
+                    except Exception:
+                        # Melhor esforço; ignorar se falhar parsing
+                        pass
     except Exception:
         # Se algo der errado na leitura/parsing, apenas retornamos vazio
         return {}
 
     creds: Dict[str, Any] = {}
-    if partner_key:
-        creds["partner_key"] = partner_key
+
+    if test_partner_key:
+        creds["test_partner_key"] = test_partner_key
+    if test_partner_id:
+        creds["test_partner_id"] = test_partner_id
+    if test_shop_id:
+        creds["test_shop_id"] = test_shop_id
+    if test_access_token:
+        creds["test_access_token"] = test_access_token
+
+    if live_partner_key:
+        creds["live_partner_key"] = live_partner_key
+    if live_partner_id:
+        creds["live_partner_id"] = live_partner_id
+    if live_shop_id:
+        creds["live_shop_id"] = live_shop_id
+
+    return creds
+
+
+def load_credentials_from_env() -> Dict[str, Any]:
+    """Lê credenciais (opcionais) de variáveis de ambiente.
+
+    Útil para produção/Streamlit Cloud (ex.: st.secrets -> env) sem salvar nada em disco.
+
+    Variáveis suportadas:
+    - SHOPEE_PARTNER_ID
+    - SHOPEE_PARTNER_KEY
+    - SHOPEE_SHOP_ID
+    - SHOPEE_ACCESS_TOKEN
+    - SHOPEE_API_BASE_URL
+    """
+    mapping = {
+        "partner_id": "SHOPEE_PARTNER_ID",
+        "partner_key": "SHOPEE_PARTNER_KEY",
+        "shop_id": "SHOPEE_SHOP_ID",
+        "access_token": "SHOPEE_ACCESS_TOKEN",
+        "api_base_url": "SHOPEE_API_BASE_URL",
+    }
+    creds: Dict[str, Any] = {}
+    for key, env_name in mapping.items():
+        value = os.getenv(env_name)
+        if value:
+            creds[key] = value
+    return creds
+
+
+def load_credentials_from_streamlit_secrets() -> Dict[str, Any]:
+    """Lê credenciais (opcionais) do Streamlit Cloud via `st.secrets`.
+
+    O Streamlit Cloud recomenda armazenar segredos em `st.secrets`.
+    Aceita tanto as chaves no formato SHOPEE_* quanto chaves simples.
+
+    Exemplos (Secrets):
+    - SHOPEE_PARTNER_ID = "..."
+    - SHOPEE_PARTNER_KEY = "..."
+    - SHOPEE_SHOP_ID = "..."
+    - SHOPEE_ACCESS_TOKEN = "..."  (opcional; preferível obter via OAuth)
+    - SHOPEE_API_BASE_URL = "https://openplatform.shopee.com.br"
+    """
+    try:
+        secrets = st.secrets  # type: ignore[attr-defined]
+    except Exception:
+        return {}
+
+    def _get(*keys: str) -> Optional[str]:
+        for k in keys:
+            try:
+                v = secrets.get(k)  # type: ignore[call-arg]
+            except Exception:
+                v = None
+            if v is None:
+                continue
+            s = str(v).strip()
+            if s:
+                return s
+        return None
+
+    creds: Dict[str, Any] = {}
+    partner_id = _get("SHOPEE_PARTNER_ID", "partner_id")
+    partner_key = _get("SHOPEE_PARTNER_KEY", "partner_key")
+    shop_id = _get("SHOPEE_SHOP_ID", "shop_id")
+    access_token = _get("SHOPEE_ACCESS_TOKEN", "access_token")
+    api_base_url = _get("SHOPEE_API_BASE_URL", "api_base_url")
+
     if partner_id:
         creds["partner_id"] = partner_id
+    if partner_key:
+        creds["partner_key"] = partner_key
     if shop_id:
         creds["shop_id"] = shop_id
     if access_token:
         creds["access_token"] = access_token
+    if api_base_url:
+        creds["api_base_url"] = api_base_url
+
     return creds
 
 
@@ -169,6 +302,87 @@ class ShopeeClient:
             hashlib.sha256,
         ).hexdigest()
         return digest
+
+    def _sign_partner_only(self, path: str, timestamp: int) -> str:
+        """Assinatura HMAC-SHA256 para endpoints de auth (sem access_token/shop_id).
+
+        Conforme docs v2 do token:
+        sign_base_string = partner_id + path + timestamp
+        """
+        base_string = f"{self.partner_id}{path}{timestamp}"
+        digest = hmac.new(
+            self.partner_key.encode("utf-8"),
+            base_string.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return digest
+
+    def _make_partner_request(
+        self,
+        method: str,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        body: Optional[Dict[str, Any]] = None,
+        timeout: int = 30,
+    ) -> Dict[str, Any]:
+        """Requisição assinada apenas com partner_id (usada em OAuth/token)."""
+        if params is None:
+            params = {}
+
+        ts = int(time.time())
+        sign = self._sign_partner_only(path, ts)
+        params.update({"partner_id": self.partner_id, "timestamp": ts, "sign": sign})
+
+        url = f"{self.base_url}{path}"
+        method = method.upper()
+
+        try:
+            if method == "GET":
+                resp = requests.get(url, params=params, timeout=timeout)
+            else:
+                headers = {"Content-Type": "application/json"}
+                resp = requests.post(
+                    url,
+                    params=params,
+                    json=body or {},
+                    headers=headers,
+                    timeout=timeout,
+                )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Erro de conexão com Shopee: {exc}") from exc
+
+        try:
+            data = resp.json()
+        except ValueError:
+            raise RuntimeError(f"Resposta inválida da Shopee (não JSON): {resp.text[:200]}")
+
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"HTTP {resp.status_code} da Shopee: {data.get('error')} - {data.get('message')}"
+            )
+
+        if data.get("error") not in (None, ""):
+            raise RuntimeError(f"Erro na API Shopee: {data.get('error')} - {data.get('message')}")
+
+        return data
+
+    # ---------- OAuth / Token ----------
+
+    def exchange_code_for_token(self, code: str, shop_id: int) -> Dict[str, Any]:
+        """Troca `code` por access_token/refresh_token (v2.public.get_access_token)."""
+        path = "/api/v2/auth/token/get"
+        body = {"partner_id": self.partner_id, "code": str(code), "shop_id": int(shop_id)}
+        return self._make_partner_request("POST", path, body=body)
+
+    def refresh_access_token(self, refresh_token: str, shop_id: int) -> Dict[str, Any]:
+        """Renova access_token usando refresh_token (v2.public.refresh_access_token)."""
+        path = "/api/v2/auth/access_token/get"
+        body = {
+            "partner_id": self.partner_id,
+            "refresh_token": str(refresh_token),
+            "shop_id": int(shop_id),
+        }
+        return self._make_partner_request("POST", path, body=body)
 
     def _make_request(
         self,
@@ -425,42 +639,280 @@ def init_session_state() -> None:
         st.session_state["last_sync_ts"] = None
     if "api_base_url" not in st.session_state:
         st.session_state["api_base_url"] = BASE_URL
+    if "api_env" not in st.session_state:
+        st.session_state["api_env"] = "Produção"
+    if "api_region" not in st.session_state:
+        st.session_state["api_region"] = "Brasil"
+    if "refresh_token" not in st.session_state:
+        st.session_state["refresh_token"] = ""
+    if "last_token_refresh_ts" not in st.session_state:
+        st.session_state["last_token_refresh_ts"] = None
 
 
 def sidebar_setup() -> None:
     st.sidebar.header("Configurações Shopee (Setup)")
 
-    # Pré-carrega credenciais de teste a partir de arquivo local somente leitura,
-    # para que "já estejam no sistema" quando necessário.
+    # Pré-carrega credenciais (sem salvar em disco):
+    # 1) arquivo local somente leitura (sandbox/teste)
+    # 2) variáveis de ambiente (ideal para produção)
     file_creds = load_test_credentials_from_file()
-    if file_creds.get("partner_id") and not st.session_state.get("partner_id"):
-        st.session_state["partner_id"] = str(file_creds["partner_id"])
-    if file_creds.get("partner_key") and not st.session_state.get("partner_key"):
-        st.session_state["partner_key"] = str(file_creds["partner_key"])
-    if file_creds.get("shop_id") and not st.session_state.get("shop_id"):
-        st.session_state["shop_id"] = str(file_creds["shop_id"])
-    if file_creds.get("access_token") and not st.session_state.get("access_token"):
-        st.session_state["access_token"] = str(file_creds["access_token"])
+    secrets_creds = load_credentials_from_streamlit_secrets()
+    env_creds = load_credentials_from_env()
 
-    partner_id = st.sidebar.text_input("Partner ID", key="partner_id")
-    partner_key = st.sidebar.text_input(
-        "Partner Key (HMAC)", type="password", key="partner_key"
+    # Se o app for aberto com query params (ex.: redirect do OAuth), auto-preenche.
+    # Funciona tanto no Streamlit Cloud (redirect para a própria URL do app)
+    # quanto localmente, se você abrir: http://localhost:8501/?code=...&shop_id=...
+    def _qp_first(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return str(value[0]) if value else None
+        return str(value)
+
+    try:
+        qp: Any = st.query_params  # Streamlit novo
+        qp_code = _qp_first(qp.get("code"))
+        qp_shop_id = _qp_first(qp.get("shop_id"))
+    except Exception:
+        qp = st.experimental_get_query_params()
+        qp_code = _qp_first(qp.get("code"))
+        qp_shop_id = _qp_first(qp.get("shop_id"))
+
+    if qp_code and not st.session_state.get("oauth_code"):
+        st.session_state["oauth_code"] = qp_code
+    if qp_shop_id and not st.session_state.get("oauth_shop_id"):
+        st.session_state["oauth_shop_id"] = qp_shop_id
+
+    # Se veio shop_id no redirect, isso é Live e ajuda a preencher automaticamente.
+    if qp_shop_id and not file_creds.get("live_shop_id"):
+        file_creds["live_shop_id"] = qp_shop_id
+
+    preferred_env = st.session_state.get("api_env", "Produção")
+    if preferred_env == "Sandbox":
+        preferred_partner_id = file_creds.get("test_partner_id")
+        preferred_partner_key = file_creds.get("test_partner_key")
+        preferred_shop_id = file_creds.get("test_shop_id")
+        preferred_access_token = file_creds.get("test_access_token")
+    else:
+        preferred_partner_id = file_creds.get("live_partner_id")
+        preferred_partner_key = file_creds.get("live_partner_key")
+        preferred_shop_id = file_creds.get("live_shop_id")
+        preferred_access_token = None
+
+    # Preenche automaticamente com base no ambiente atual.
+    # Por padrão, preferimos LIVE em Produção e também substituímos valores de Sandbox
+    # quando detectados (ex.: partner_id/shop_id de teste).
+    current_partner_id = str(st.session_state.get("partner_id") or "").strip()
+    current_partner_key = str(st.session_state.get("partner_key") or "").strip()
+    current_shop_id = str(st.session_state.get("shop_id") or "").strip()
+    current_access_token = str(st.session_state.get("access_token") or "").strip()
+
+    test_partner_id = str(file_creds.get("test_partner_id") or "").strip()
+    test_partner_key = str(file_creds.get("test_partner_key") or "").strip()
+    test_shop_id = str(file_creds.get("test_shop_id") or "").strip()
+    test_access_token = str(file_creds.get("test_access_token") or "").strip()
+
+    allow_overwrite = preferred_env == "Produção"
+
+    if preferred_partner_id and (not current_partner_id or (allow_overwrite and current_partner_id == test_partner_id)):
+        st.session_state["partner_id"] = str(preferred_partner_id)
+    if preferred_partner_key and (not current_partner_key or (allow_overwrite and current_partner_key == test_partner_key)):
+        st.session_state["partner_key"] = str(preferred_partner_key)
+    if preferred_shop_id and (not current_shop_id or (allow_overwrite and current_shop_id == test_shop_id)):
+        st.session_state["shop_id"] = str(preferred_shop_id)
+
+    # Access token só é auto-preenchido no Sandbox (token de teste). Em Produção, o correto
+    # é obter via OAuth (code -> access_token).
+    if preferred_access_token and (not current_access_token or current_access_token == test_access_token):
+        st.session_state["access_token"] = str(preferred_access_token)
+
+    # Secrets (Streamlit Cloud) e ENV têm prioridade sobre arquivo local.
+    for source in (secrets_creds, env_creds):
+        if source.get("partner_id") and not st.session_state.get("partner_id"):
+            st.session_state["partner_id"] = str(source["partner_id"])
+        if source.get("partner_key") and not st.session_state.get("partner_key"):
+            st.session_state["partner_key"] = str(source["partner_key"])
+        if source.get("shop_id") and not st.session_state.get("shop_id"):
+            st.session_state["shop_id"] = str(source["shop_id"])
+        if source.get("access_token") and not st.session_state.get("access_token"):
+            st.session_state["access_token"] = str(source["access_token"])
+        if source.get("api_base_url") and not st.session_state.get("api_base_url"):
+            st.session_state["api_base_url"] = str(source["api_base_url"])
+
+    st.sidebar.caption(
+        "Dica: em **Produção (Live)** use as credenciais LIVE do console Shopee e obtenha o token via OAuth. "
+        "Em **Sandbox (Teste)** use as credenciais TEST + shop/token do sandbox."
     )
-    shop_id = st.sidebar.text_input("Shop ID", key="shop_id")
+
+    partner_id = st.sidebar.text_input(
+        "Partner ID",
+        key="partner_id",
+        help=(
+            "Produção/Live: use o **Live Partner_id** do seu app no Shopee Open Platform. "
+            "Sandbox/Teste: use o **Test Partner_id**."
+        ),
+    )
+    partner_key = st.sidebar.text_input(
+        "Partner Key (HMAC)",
+        type="password",
+        key="partner_key",
+        help=(
+            "Produção/Live: use a **Live API Partner Key**. "
+            "Sandbox/Teste: use a **Test API Partner Key**."
+        ),
+    )
+    shop_id = st.sidebar.text_input(
+        "Shop ID",
+        key="shop_id",
+        help=(
+            "Produção/Live: use o **shop_id da sua loja real** (normalmente vem no redirect do OAuth). "
+            "Sandbox/Teste: use o **Shop ID do sandbox**."
+        ),
+    )
     access_token = st.sidebar.text_input(
-        "Access Token", type="password", key="access_token"
+        "Access Token",
+        type="password",
+        key="access_token",
+        help=(
+            "Produção/Live: é o **access_token LIVE** obtido ao trocar o `code` no bloco OAuth abaixo. "
+            "Sandbox/Teste: use o token de teste (ex.: AccessTokenTest)."
+        ),
     )
 
     with st.sidebar.expander("Opções avançadas (API)"):
+        api_env = st.selectbox(
+            "Ambiente",
+            options=["Sandbox", "Produção"],
+            key="api_env",
+            help=(
+                "Sandbox para testes; Produção atualiza a loja real. "
+                "O host padrão é preenchido automaticamente."
+            ),
+        )
+
+        api_region = st.selectbox(
+            "Região (host de produção)",
+            options=["Brasil", "Global"],
+            key="api_region",
+            help=(
+                "A Shopee usa hosts diferentes por região. "
+                "Brasil usa openplatform.shopee.com.br; Global usa partner.shopeemobile.com."
+            ),
+            disabled=(api_env != "Produção"),
+        )
+
+        if api_env == "Sandbox":
+            default_host = SANDBOX_BASE_URL
+        else:
+            default_host = BASE_URL if api_region == "Brasil" else GLOBAL_BASE_URL
+
+        # Só sobrescreve automaticamente se o valor atual estiver nos padrões.
+        if st.session_state.get("api_base_url") in (
+            None,
+            "",
+            BASE_URL,
+            GLOBAL_BASE_URL,
+            SANDBOX_BASE_URL,
+        ):
+            st.session_state["api_base_url"] = default_host
+
         api_base_url = st.text_input(
             "API Base URL",
             key="api_base_url",
             help=(
-                "Host base da API Shopee. Por padrão usa produção. "
-                "Para sandbox, informe o domínio indicado na documentação/"
-                "API Test Tool, por exemplo o host de sandbox v2."
+                "Host base da API Shopee (somente o host, sem /api/v2). "
+                "Para BR (produção): https://openplatform.shopee.com.br . "
+                "Para Global (produção): https://partner.shopeemobile.com . "
+                "Para sandbox: use o host indicado no API Test Tool (ex.: ...sandbox...sg)."
             ),
         )
+
+        if api_env == "Produção":
+            st.warning(
+                "Produção: as atualizações de estoque afetam sua loja real.",
+                icon="⚠️",
+            )
+
+        st.divider()
+        st.markdown("**OAuth (Live) – trocar code por token**")
+        st.caption(
+            "Após autorizar no console, cole aqui o `code` e o `shop_id` retornados no redirect. "
+            "O token é salvo apenas na sessão do Streamlit."
+        )
+
+        oauth_code = st.text_input(
+            "Authorization code (somente Live)",
+            key="oauth_code",
+            help="Produção/Live: code do redirect do OAuth. Válido por poucos minutos e uso único.",
+        )
+        oauth_shop_id = st.text_input(
+            "Shop ID (do redirect – Live)",
+            key="oauth_shop_id",
+            help="Produção/Live: shop_id retornado no redirect do OAuth (da sua loja real).",
+        )
+
+        col_a, col_b = st.columns(2)
+
+        if col_a.button("Trocar code por access token"):
+            if not (partner_id and partner_key and api_base_url):
+                st.error("Preencha Partner ID, Partner Key e API Base URL antes.")
+            elif not (oauth_code.strip() and oauth_shop_id.strip()):
+                st.error("Preencha o code e o shop_id retornados no redirect.")
+            else:
+                try:
+                    tmp_client = ShopeeClient(
+                        partner_id=int(partner_id),
+                        partner_key=partner_key,
+                        shop_id=0,
+                        access_token="",
+                        base_url=api_base_url or BASE_URL,
+                    )
+                    with st.spinner("Trocando code por token..."):
+                        token_data = tmp_client.exchange_code_for_token(
+                            code=oauth_code.strip(),
+                            shop_id=int(oauth_shop_id.strip()),
+                        )
+
+                    st.session_state["shop_id"] = str(oauth_shop_id.strip())
+                    st.session_state["access_token"] = str(token_data.get("access_token", ""))
+                    st.session_state["refresh_token"] = str(token_data.get("refresh_token", ""))
+                    st.session_state["last_token_refresh_ts"] = int(time.time())
+
+                    if st.session_state["access_token"]:
+                        st.success("Token obtido com sucesso. Agora clique em 'Sincronizar Dados da Shopee'.")
+                    else:
+                        st.warning("Resposta sem access_token. Verifique a resposta abaixo.")
+                        st.json(token_data)
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Falha ao obter token: {exc}")
+
+        if col_b.button("Renovar access token (refresh_token)"):
+            rt = str(st.session_state.get("refresh_token") or "").strip()
+            sid = str(st.session_state.get("shop_id") or "").strip()
+            if not (partner_id and partner_key and api_base_url):
+                st.error("Preencha Partner ID, Partner Key e API Base URL antes.")
+            elif not (rt and sid):
+                st.error("Precisa ter refresh_token e shop_id na sessão (faça a troca do code primeiro).")
+            else:
+                try:
+                    tmp_client = ShopeeClient(
+                        partner_id=int(partner_id),
+                        partner_key=partner_key,
+                        shop_id=0,
+                        access_token="",
+                        base_url=api_base_url or BASE_URL,
+                    )
+                    with st.spinner("Renovando access token..."):
+                        token_data = tmp_client.refresh_access_token(
+                            refresh_token=rt,
+                            shop_id=int(sid),
+                        )
+                    st.session_state["access_token"] = str(token_data.get("access_token", ""))
+                    st.session_state["refresh_token"] = str(token_data.get("refresh_token", rt))
+                    st.session_state["last_token_refresh_ts"] = int(time.time())
+                    st.success("Access token renovado. Agora você pode sincronizar novamente.")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Falha ao renovar token: {exc}")
 
     st.sidebar.caption(
         "As credenciais não são salvas em disco; apenas em sessão."
@@ -668,6 +1120,13 @@ def tab_inventory():
             )
             return
 
+        if st.session_state.get("api_env") == "Produção":
+            if not st.session_state.get("confirm_prod_update"):
+                st.error(
+                    "Para Produção, marque a confirmação antes de atualizar estoques."
+                )
+                return
+
         total_success = 0
         errors: List[Dict[str, Any]] = []
 
@@ -727,6 +1186,13 @@ def tab_inventory():
                 "Algumas atualizações falharam. Veja detalhes abaixo para correção manual ou nova tentativa."
             )
             st.json(errors)
+
+
+    if st.session_state.get("api_env") == "Produção":
+        st.checkbox(
+            "Confirmo que quero atualizar estoques na Shopee (Produção)",
+            key="confirm_prod_update",
+        )
 
 
 def main():
