@@ -881,6 +881,7 @@ def sidebar_setup() -> None:
             api_env == "Produção"
             and not st.session_state.get("_auto_token_bootstrap_done")
             and not str(st.session_state.get("access_token") or "").strip()
+            and not str(st.session_state.get("oauth_code") or "").strip()
             and str(st.session_state.get("refresh_token") or "").strip()
             and str(st.session_state.get("partner_id") or "").strip()
             and str(st.session_state.get("partner_key") or "").strip()
@@ -914,7 +915,17 @@ def sidebar_setup() -> None:
                         f"SHOPEE_REFRESH_TOKEN = \"{new_rt}\""
                     )
             except Exception as exc:  # noqa: BLE001
-                st.warning(f"Não foi possível auto-renovar o token: {exc}")
+                # Se o refresh_token estiver errado (mismatch com shop_id), não vale ficar
+                # tentando a cada carregamento. Limpamos da sessão para o usuário trocar via OAuth.
+                if "error_param" in str(exc):
+                    st.session_state["refresh_token"] = ""
+                    st.warning(
+                        "Não foi possível auto-renovar o token (refresh_token inválido para este shop_id). "
+                        "Vou ignorar o refresh_token nesta sessão. Gere um novo token pelo OAuth e atualize o Secrets.\n\n"
+                        f"Detalhes: {exc}"
+                    )
+                else:
+                    st.warning(f"Não foi possível auto-renovar o token: {exc}")
             finally:
                 st.session_state["_auto_token_bootstrap_done"] = True
 
@@ -959,7 +970,8 @@ def sidebar_setup() -> None:
                 st.error("Preencha o code e o shop_id retornados no redirect.")
             else:
                 try:
-                    code_to_exchange = oauth_code.strip()
+                    # Alguns redirects podem transformar '+' em espaço; normalizamos para evitar invalid_code.
+                    code_to_exchange = oauth_code.strip().replace(" ", "+")
                     if code_to_exchange == str(st.session_state.get("_last_oauth_code_exchanged") or ""):
                         st.warning(
                             "Esse code já foi tentado nesta sessão. Gere um novo code no Open Platform e tente novamente."
