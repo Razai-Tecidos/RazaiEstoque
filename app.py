@@ -789,6 +789,18 @@ def sidebar_setup() -> None:
         ),
     )
 
+    # Mostra o refresh_token para permitir salvar em Secrets (Streamlit Cloud).
+    # Sem isso, o usuário não consegue persistir o token entre reinícios.
+    st.sidebar.text_input(
+        "Refresh Token (Live)",
+        type="password",
+        key="refresh_token",
+        help=(
+            "Produção/Live: token de longa duração retornado no OAuth e/ou ao renovar. "
+            "Recomendado salvar no Streamlit Cloud em Secrets como SHOPEE_REFRESH_TOKEN."
+        ),
+    )
+
     with st.sidebar.expander("Opções avançadas (API)"):
         api_env = st.selectbox(
             "Ambiente",
@@ -855,6 +867,7 @@ def sidebar_setup() -> None:
             and str(st.session_state.get("api_base_url") or "").strip()
         ):
             try:
+                previous_rt = str(st.session_state.get("refresh_token") or "").strip()
                 tmp_client = ShopeeClient(
                     partner_id=int(st.session_state["partner_id"]),
                     partner_key=str(st.session_state["partner_key"]),
@@ -868,10 +881,17 @@ def sidebar_setup() -> None:
                         shop_id=int(str(st.session_state.get("shop_id") or "0").strip()),
                     )
                 st.session_state["access_token"] = str(token_data.get("access_token", ""))
-                st.session_state["refresh_token"] = str(token_data.get("refresh_token", st.session_state.get("refresh_token") or ""))
+                new_rt = str(token_data.get("refresh_token", "") or "").strip()
+                if new_rt:
+                    st.session_state["refresh_token"] = new_rt
                 st.session_state["last_token_refresh_ts"] = int(time.time())
                 if st.session_state.get("access_token"):
                     st.success("Access token renovado automaticamente via refresh_token.")
+                if new_rt and previous_rt and new_rt != previous_rt:
+                    st.info(
+                        "A Shopee rotacionou seu refresh_token. Atualize o Secrets do Streamlit Cloud com o novo valor:\n"
+                        f"SHOPEE_REFRESH_TOKEN = \"{new_rt}\""
+                    )
             except Exception as exc:  # noqa: BLE001
                 st.warning(f"Não foi possível auto-renovar o token: {exc}")
             finally:
@@ -883,6 +903,11 @@ def sidebar_setup() -> None:
             "Após autorizar no console, cole aqui o `code` e o `shop_id` retornados no redirect. "
             "O token é salvo apenas na sessão do Streamlit."
         )
+
+        # Ajuda de copy/paste para Secrets
+        if str(st.session_state.get("refresh_token") or "").strip():
+            rt_for_copy = str(st.session_state.get("refresh_token") or "").strip()
+            st.code(f'SHOPEE_REFRESH_TOKEN = "{rt_for_copy}"')
 
         oauth_code = st.text_input(
             "Authorization code (somente Live)",
@@ -944,6 +969,7 @@ def sidebar_setup() -> None:
                 st.error("Precisa ter refresh_token e shop_id na sessão (faça a troca do code primeiro).")
             else:
                 try:
+                    previous_rt = rt
                     tmp_client = ShopeeClient(
                         partner_id=int(partner_id),
                         partner_key=partner_key,
@@ -957,9 +983,16 @@ def sidebar_setup() -> None:
                             shop_id=int(sid),
                         )
                     st.session_state["access_token"] = str(token_data.get("access_token", ""))
-                    st.session_state["refresh_token"] = str(token_data.get("refresh_token", rt))
+                    new_rt = str(token_data.get("refresh_token", "") or "").strip()
+                    if new_rt:
+                        st.session_state["refresh_token"] = new_rt
                     st.session_state["last_token_refresh_ts"] = int(time.time())
                     st.success("Access token renovado. Agora você pode sincronizar novamente.")
+                    if new_rt and previous_rt and new_rt != previous_rt:
+                        st.info(
+                            "A Shopee rotacionou seu refresh_token. Atualize o Secrets do Streamlit Cloud com o novo valor:\n"
+                            f"SHOPEE_REFRESH_TOKEN = \"{new_rt}\""
+                        )
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"Falha ao renovar token: {exc}")
 
