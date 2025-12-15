@@ -1015,10 +1015,30 @@ def sidebar_setup() -> None:
                 st.error("Preencha Partner ID, Partner Key e API Base URL antes.")
             elif not (oauth_code.strip() and oauth_shop_id.strip()):
                 st.error("Preencha o code e o shop_id retornados no redirect.")
+            elif not str(redirect_url or "").strip():
+                st.error(
+                    "Preencha o Redirect URL (Live). Ele precisa ser exatamente o mesmo cadastrado/" 
+                    "usado no Authorize Live Partner (incluindo https e barra final, se houver)."
+                )
             else:
                 try:
-                    # Alguns redirects podem transformar '+' em espaço; normalizamos para evitar invalid_code.
-                    code_to_exchange = oauth_code.strip().replace(" ", "+")
+                    # Alguns redirects/cópias deixam o code percent-encoded (ex.: %2B).
+                    # Usamos unquote (não unquote_plus) para NÃO transformar '+' em espaço.
+                    raw_code = oauth_code.strip()
+                    decoded_code = urllib.parse.unquote(raw_code)
+                    # Fallback: alguns parses/cópias transformam '+' em espaço.
+                    code_to_exchange = decoded_code.replace(" ", "+")
+
+                    with st.expander("Debug OAuth (se der erro)"):
+                        st.write(
+                            {
+                                "api_base_url": str(api_base_url or "").strip(),
+                                "redirect_url_sent": str(redirect_url or "").strip(),
+                                "shop_id_sent": str(oauth_shop_id or "").strip(),
+                                "code_len": len(code_to_exchange),
+                                "code_preview": f"{code_to_exchange[:8]}...{code_to_exchange[-8:]}" if len(code_to_exchange) > 16 else code_to_exchange,
+                            }
+                        )
                     if code_to_exchange == str(st.session_state.get("_last_oauth_code_exchanged") or ""):
                         st.warning(
                             "Esse code já foi tentado nesta sessão. Gere um novo code no Open Platform e tente novamente."
