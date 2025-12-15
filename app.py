@@ -364,11 +364,13 @@ class ShopeeClient:
 
         if resp.status_code != 200:
             raise RuntimeError(
-                f"HTTP {resp.status_code} da Shopee: {data.get('error')} - {data.get('message')}"
+                f"HTTP {resp.status_code} da Shopee: {data.get('error')} - {data.get('message')} | response={data}"
             )
 
         if data.get("error") not in (None, ""):
-            raise RuntimeError(f"Erro na API Shopee: {data.get('error')} - {data.get('message')}")
+            raise RuntimeError(
+                f"Erro na API Shopee: {data.get('error')} - {data.get('message')} | response={data}"
+            )
 
         return data
 
@@ -441,11 +443,13 @@ class ShopeeClient:
         # Conforme docs, campos comuns: error, message
         if resp.status_code != 200:
             raise RuntimeError(
-                f"HTTP {resp.status_code} da Shopee: {data.get('error')} - {data.get('message')}"
+                f"HTTP {resp.status_code} da Shopee: {data.get('error')} - {data.get('message')} | response={data}"
             )
 
         if data.get("error") not in (None, ""):
-            raise RuntimeError(f"Erro na API Shopee: {data.get('error')} - {data.get('message')}")
+            raise RuntimeError(
+                f"Erro na API Shopee: {data.get('error')} - {data.get('message')} | response={data}"
+            )
 
         return data
 
@@ -655,6 +659,8 @@ def init_session_state() -> None:
         st.session_state["last_token_refresh_ts"] = None
     if "_auto_token_bootstrap_done" not in st.session_state:
         st.session_state["_auto_token_bootstrap_done"] = False
+    if "_last_oauth_code_exchanged" not in st.session_state:
+        st.session_state["_last_oauth_code_exchanged"] = ""
 
 
 def sidebar_setup() -> None:
@@ -932,6 +938,13 @@ def sidebar_setup() -> None:
                 st.error("Preencha o code e o shop_id retornados no redirect.")
             else:
                 try:
+                    code_to_exchange = oauth_code.strip()
+                    if code_to_exchange == str(st.session_state.get("_last_oauth_code_exchanged") or ""):
+                        st.warning(
+                            "Esse code já foi tentado nesta sessão. Gere um novo code no Open Platform e tente novamente."
+                        )
+                        st.stop()
+
                     tmp_client = ShopeeClient(
                         partner_id=int(partner_id),
                         partner_key=partner_key,
@@ -941,9 +954,11 @@ def sidebar_setup() -> None:
                     )
                     with st.spinner("Trocando code por token..."):
                         token_data = tmp_client.exchange_code_for_token(
-                            code=oauth_code.strip(),
+                            code=code_to_exchange,
                             shop_id=int(oauth_shop_id.strip()),
                         )
+
+                    st.session_state["_last_oauth_code_exchanged"] = code_to_exchange
 
                     st.session_state["shop_id"] = str(oauth_shop_id.strip())
                     st.session_state["access_token"] = str(token_data.get("access_token", ""))
