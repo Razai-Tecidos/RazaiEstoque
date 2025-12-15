@@ -5,6 +5,7 @@ import json
 import uuid
 import hashlib
 import urllib.parse
+import unicodedata
 from typing import Dict, Any, List, Optional, Tuple
 
 import requests
@@ -516,6 +517,31 @@ class ShopeeClient:
 
         return items
 
+    def get_item_base_info(self, item_ids: List[int]) -> List[Dict[str, Any]]:
+        """Busca informações base (incluindo título do anúncio) em lote.
+
+        Na prática, `get_item_list` pode retornar apenas IDs/status. Para exibir nomes
+        e permitir busca por título, usamos `get_item_base_info`.
+        """
+        path = "/api/v2/product/get_item_base_info"
+        if not item_ids:
+            return []
+
+        # Limite do lote varia por região; 50 costuma ser seguro.
+        batch_size = 50
+        results: List[Dict[str, Any]] = []
+        for i in range(0, len(item_ids), batch_size):
+            batch = item_ids[i : i + batch_size]
+            params = {"item_id_list": ",".join(str(int(x)) for x in batch)}
+            data = self._make_request("GET", path, params=params)
+
+            resp = data.get("response", {}) or {}
+            items = resp.get("item_list") or resp.get("item") or []
+            if isinstance(items, list):
+                results.extend(items)
+
+        return results
+
     def get_model_list(self, item_id: int) -> List[Dict[str, Any]]:
         """Retorna a lista de modelos (variações) para um item.
 
@@ -578,12 +604,46 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
     }
     """
     items = client.get_item_list()
+
+    item_ids: List[int] = []
+    for it in items:
+        if it.get("item_id") is None:
+            continue
+        try:
+            item_ids.append(int(it.get("item_id")))
+        except Exception:
+            continue
+
+    base_info_list = client.get_item_base_info(item_ids)
+    base_by_id: Dict[int, Dict[str, Any]] = {}
+    for bi in base_info_list:
+        try:
+            iid = int(bi.get("item_id"))
+        except Exception:
+            continue
+        base_by_id[iid] = bi
+
+    def _item_title(bi: Dict[str, Any]) -> str:
+        for k in ("item_name", "name", "title"):
+            v = bi.get(k)
+            if v:
+                return str(v)
+        return ""
+
     models_cache: List[Dict[str, Any]] = []
 
     for item in items:
-        item_id = item.get("item_id")
-        item_name = item.get("item_name", "")
-        has_model = item.get("has_model", False)
+        if item.get("item_id") is None:
+            continue
+        item_id = int(item.get("item_id"))
+        bi = base_by_id.get(item_id, {})
+
+        item_name = _item_title(bi) or str(item.get("item_name") or "")
+
+        has_model = bi.get("has_model")
+        if has_model is None:
+            has_model = item.get("has_model", False)
+        has_model = bool(has_model)
 
         if has_model:
             models = client.get_model_list(item_id)
@@ -604,7 +664,7 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
                 )
         else:
             # Item sem variações: tratamos como um "modelo único" com model_id=None
-            normal_stock = item.get("stock") or item.get("normal_stock")
+            normal_stock = bi.get("stock") or bi.get("normal_stock") or item.get("stock") or item.get("normal_stock")
             display_name = item_name
             models_cache.append(
                 {
@@ -648,17 +708,28 @@ def search_models(
     if not query:
         return models
 
-    q = query.lower()
+    def _norm(s: str) -> str:
+        s = (s or "").strip().lower()
+        s = unicodedata.normalize("NFKD", s)
+        s = "".join(ch for ch in s if not unicodedata.combining(ch))
+        return " ".join(s.split())
+
+    q = _norm(query)
     filtered: List[Tuple[float, Dict[str, Any]]] = []
 
     for m in models:
-        text = f"{m.get('item_name', '')} {m.get('model_name', '')}".lower()
-        if q in text:
-            ratio = SequenceMatcher(None, q, text).ratio()
-            if ratio >= min_ratio:
-                filtered.append((ratio, m))
+        text = _norm(f"{m.get('item_name', '')} {m.get('model_name', '')}")
+        if not text:
+            continue
 
-    # Ordena da maior similaridade para a menor
+        if q in text:
+            ratio = 1.0
+        else:
+            ratio = SequenceMatcher(None, q, text).ratio()
+
+        if ratio >= min_ratio:
+            filtered.append((ratio, m))
+
     filtered.sort(key=lambda t: t[0], reverse=True)
     return [m for _, m in filtered]
 
