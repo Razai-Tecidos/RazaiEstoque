@@ -36,6 +36,122 @@ GROUPS_FILE = "groups.json"
 CREDS_FILE = "razaiestoque.txt"
 
 
+def _get_secret_or_env(*keys: str) -> Optional[str]:
+    """Lê configuração em ordem: st.secrets -> env.
+
+    Evita quebrar import/exec fora do Streamlit: se `st.secrets` não estiver
+    disponível, apenas ignora e tenta env.
+    """
+    for k in keys:
+        # 1) Streamlit secrets
+        try:
+            # st.secrets funciona como mapping
+            v = st.secrets.get(k)  # type: ignore[attr-defined]
+        except Exception:
+            v = None
+        if v is not None:
+            s = str(v).strip()
+            if s:
+                return s
+
+        # 2) Environment
+        v2 = os.getenv(k)
+        if v2:
+            s2 = str(v2).strip()
+            if s2:
+                return s2
+    return None
+
+
+def _groups_remote_config() -> Dict[str, str]:
+    """Configuração do backend remoto para grupos.
+
+    Ative definindo `GROUPS_REMOTE_URL` (em `st.secrets` ou env).
+    Opcional:
+    - GROUPS_REMOTE_TOKEN (Bearer)
+    - GROUPS_REMOTE_READ_METHOD (GET por padrão)
+    - GROUPS_REMOTE_WRITE_METHOD (PUT por padrão)
+    - GROUPS_REMOTE_TIMEOUT (segundos, default 15)
+    """
+    url = _get_secret_or_env("GROUPS_REMOTE_URL")
+    if not url:
+        return {}
+
+    cfg: Dict[str, str] = {
+        "url": url,
+        "token": _get_secret_or_env("GROUPS_REMOTE_TOKEN") or "",
+        "read_method": (_get_secret_or_env("GROUPS_REMOTE_READ_METHOD") or "GET").upper(),
+        "write_method": (_get_secret_or_env("GROUPS_REMOTE_WRITE_METHOD") or "PUT").upper(),
+        "timeout": _get_secret_or_env("GROUPS_REMOTE_TIMEOUT") or "15",
+    }
+    return cfg
+
+
+def _parse_groups_payload(data: Any) -> List[Dict[str, Any]]:
+    # Suporte tanto para lista direta quanto para {"groups": [...]}.
+    if isinstance(data, dict) and "groups" in data:
+        return data.get("groups") or []
+    if isinstance(data, list):
+        return data
+    return []
+
+
+def _remote_load_groups() -> List[Dict[str, Any]]:
+    cfg = _groups_remote_config()
+    if not cfg:
+        return []
+
+    headers: Dict[str, str] = {"Accept": "application/json"}
+    if cfg.get("token"):
+        headers["Authorization"] = f"Bearer {cfg['token']}"
+
+    method = cfg.get("read_method", "GET")
+    timeout = float(cfg.get("timeout") or 15)
+
+    try:
+        if method == "GET":
+            resp = requests.get(cfg["url"], headers=headers, timeout=timeout)
+        elif method == "POST":
+            resp = requests.post(cfg["url"], headers=headers, timeout=timeout)
+        else:
+            raise RuntimeError(f"GROUPS_REMOTE_READ_METHOD inválido: {method}")
+
+        # Permite URL vazia (sem registro) começar como lista vazia
+        if resp.status_code == 404:
+            return []
+
+        resp.raise_for_status()
+        payload = resp.json()
+        return _parse_groups_payload(payload)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"Falha ao carregar groups do backend remoto: {exc}")
+
+
+def _remote_save_groups(groups: List[Dict[str, Any]]) -> None:
+    cfg = _groups_remote_config()
+    if not cfg:
+        raise RuntimeError("Backend remoto de grupos não configurado")
+
+    headers: Dict[str, str] = {"Content-Type": "application/json", "Accept": "application/json"}
+    if cfg.get("token"):
+        headers["Authorization"] = f"Bearer {cfg['token']}"
+
+    method = cfg.get("write_method", "PUT")
+    timeout = float(cfg.get("timeout") or 15)
+    payload = {"groups": groups}
+
+    try:
+        if method == "PUT":
+            resp = requests.put(cfg["url"], headers=headers, json=payload, timeout=timeout)
+        elif method == "POST":
+            resp = requests.post(cfg["url"], headers=headers, json=payload, timeout=timeout)
+        else:
+            raise RuntimeError(f"GROUPS_REMOTE_WRITE_METHOD inválido: {method}")
+        resp.raise_for_status()
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"Falha ao salvar groups no backend remoto: {exc}")
+
+
 # ==========================
 # Utilidades de Persistência Local (JSON)
 # ==========================
@@ -60,6 +176,10 @@ def load_groups() -> List[Dict[str, Any]]:
         "shopee_model_ids": [int, ...]
     }
     """
+    # Se configurado, usa backend remoto (para Streamlit Cloud / persistência fora do FS).
+    if _groups_remote_config():
+        return _remote_load_groups()
+
     if not os.path.exists(GROUPS_FILE):
         return []
 
@@ -69,19 +189,58 @@ def load_groups() -> List[Dict[str, Any]]:
     except Exception:
         return []
 
-    # Suporte tanto para lista direta quanto para {"groups": [...]}
-    if isinstance(data, dict) and "groups" in data:
-        return data["groups"] or []
-    if isinstance(data, list):
-        return data
-    return []
+    return _parse_groups_payload(data)
 
 
 def save_groups(groups: List[Dict[str, Any]]) -> None:
     """Salva grupos de produtos no arquivo JSON local."""
+    # Se configurado, salva no backend remoto.
+    if _groups_remote_config():
+        _remote_save_groups(groups)
+        return
+
     payload = {"groups": groups}
     with open(GROUPS_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def _validate_imported_groups_payload(payload: Any) -> List[Dict[str, Any]]:
+    """Valida minimamente um payload de importação de grupos.
+
+    Aceita:
+    - lista direta de grupos
+    - {"groups": [...]}.
+
+    Mantém compatibilidade e evita travar por campos extras.
+    """
+    groups = _parse_groups_payload(payload)
+    if not isinstance(groups, list):
+        raise ValueError("Payload inválido: groups não é lista")
+
+    out: List[Dict[str, Any]] = []
+    for g in groups:
+        if not isinstance(g, dict):
+            continue
+        items = g.get("items")
+        if items is None:
+            # grupos antigos/alternativos: sem items não ajuda no app
+            continue
+        if not isinstance(items, list):
+            continue
+
+        # Campos obrigatórios mínimos
+        master_name = str(g.get("master_name") or "").strip()
+        group_id = str(g.get("group_id") or "").strip()
+        if not master_name:
+            continue
+        if not group_id:
+            # Se vier sem id, cria um novo para manter consistência
+            g = dict(g)
+            g["group_id"] = str(uuid.uuid4())
+
+        out.append(g)
+
+    return out
 
 
 def load_test_credentials_from_file() -> Dict[str, Any]:
@@ -639,6 +798,8 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
         bi = base_by_id.get(item_id, {})
 
         item_name = _item_title(bi) or str(item.get("item_name") or "")
+        fabric_key = extract_fabric_from_title(item_name)
+        fabric_label = _titleize_words(fabric_key) if fabric_key else ""
 
         has_model = bi.get("has_model")
         if has_model is None:
@@ -652,6 +813,14 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
                 model_name = m.get("model_name", "")
                 normal_stock = m.get("normal_stock")
                 display_name = f"{item_name} - {model_name}" if model_name else item_name
+
+                color_key = extract_color_from_model(str(model_name or ""), item_name)
+                color_label = _titleize_words(color_key) if color_key else ""
+                short_display_name = (
+                    f"{fabric_label} - {color_label}".strip(" -")
+                    if fabric_label or color_label
+                    else (model_name or item_name)
+                )
                 models_cache.append(
                     {
                         "item_id": item_id,
@@ -659,6 +828,11 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
                         "item_name": item_name,
                         "model_name": model_name,
                         "display_name": display_name,
+                        "fabric_key": fabric_key,
+                        "fabric_label": fabric_label,
+                        "color_key": color_key,
+                        "color_label": color_label,
+                        "short_display_name": short_display_name,
                         "normal_stock": normal_stock,
                     }
                 )
@@ -666,6 +840,9 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
             # Item sem variações: tratamos como um "modelo único" com model_id=None
             normal_stock = bi.get("stock") or bi.get("normal_stock") or item.get("stock") or item.get("normal_stock")
             display_name = item_name
+
+            # Sem model_name, então o curto fica basicamente o tecido
+            short_display_name = fabric_label or item_name
             models_cache.append(
                 {
                     "item_id": item_id,
@@ -673,6 +850,11 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
                     "item_name": item_name,
                     "model_name": "",
                     "display_name": display_name,
+                    "fabric_key": fabric_key,
+                    "fabric_label": fabric_label,
+                    "color_key": "",
+                    "color_label": "",
+                    "short_display_name": short_display_name,
                     "normal_stock": normal_stock,
                 }
             )
@@ -739,6 +921,191 @@ def _norm_text(s: str) -> str:
     s = unicodedata.normalize("NFKD", s)
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
     return " ".join(s.split())
+
+
+def _titleize_words(s: str) -> str:
+    s = (s or "").strip()
+    if not s:
+        return ""
+    small = {"de", "da", "do", "das", "dos", "e"}
+    parts = []
+    for w in s.split():
+        lw = w.lower()
+        if lw in small:
+            parts.append(lw)
+        else:
+            parts.append(lw.capitalize())
+    out = " ".join(parts)
+    out = out.replace("Offwhite", "Off White")
+    return out
+
+
+def extract_fabric_from_title(title: str) -> str:
+    """Extrai um identificador de tecido a partir do título do anúncio.
+
+    Heurística pensada para o padrão da loja:
+    - muitos títulos seguem: "Tecido <nome do tecido> RAZAI – ..."
+    - alguns fogem (ex.: kits), então tentamos fallback por cortes comuns.
+
+    Retorna texto normalizado (sem acento, lower, espaços colapsados).
+    """
+    raw = str(title or "").strip()
+    if not raw:
+        return ""
+
+    # Cortes comuns por separadores de marketing
+    # (mantém a parte inicial onde costuma estar o nome do tecido)
+    for sep in (" – ", " - ", "–", "—"):
+        if sep in raw:
+            raw = raw.split(sep, 1)[0].strip()
+
+    s = _norm_text(raw)
+
+    # Âncora da loja
+    if " razai" in f" {s}":
+        s = s.split("razai", 1)[0].strip()
+
+    # Remove prefixos comuns
+    for prefix in (
+        "tecido ",
+        "kit ",
+        "kit 3 metros ",
+        "kit 2 metros ",
+        "kit 1 metro ",
+    ):
+        if s.startswith(prefix):
+            s = s[len(prefix):].strip()
+
+    # Se ainda sobrou "kit" no começo, tirar
+    if s.startswith("kit "):
+        s = s[4:].strip()
+
+    # Remove palavras muito genéricas que atrapalham agrupamento
+    junk_words = {
+        "metro",
+        "metros",
+        "largura",
+        "liso",
+        "barato",
+        "promocao",
+        "promocao",
+    }
+    tokens = [t for t in s.split() if t and t not in junk_words]
+
+    # Remove tokens sem letras (ex.: '+', '|', etc.)
+    tokens = [t for t in tokens if any(ch.isalpha() for ch in t)]
+
+    # Remove tokens que são claramente medidas
+    cleaned: List[str] = []
+    for t in tokens:
+        # exemplos: 0,50 1m 2m 3m 1,50m 1.50m
+        tt = t.replace(".", ",")
+        if tt.endswith("m"):
+            num = tt[:-1]
+            if num.replace(",", "").isdigit():
+                continue
+        if tt.replace(",", "").isdigit():
+            continue
+        cleaned.append(t)
+
+    # Dedup simples (ajuda em títulos do tipo "... cetim ... cetim ...")
+    seen: set[str] = set()
+    deduped: List[str] = []
+    for t in cleaned:
+        if t in seen:
+            continue
+        seen.add(t)
+        deduped.append(t)
+
+    s = " ".join(deduped).strip()
+    return s
+
+
+def extract_color_from_model(model_name: str, item_name: str = "") -> str:
+    """Extrai a cor (ou rótulo principal) do nome da variação.
+
+    Em geral, os models da Shopee aqui representam cores; mas às vezes podem
+    vir combinados com metragem. Fazemos melhor esforço para remover medidas.
+    Retorna texto normalizado (sem acento, lower).
+    """
+    raw = str(model_name or "").strip()
+    if not raw:
+        raw = str(item_name or "").strip()
+    if not raw:
+        return ""
+
+    s = _norm_text(raw)
+
+    # Se vier algo como "Branco Neve | 1m" ou "Azul - 2m", tentamos pegar a parte "mais textual".
+    for sep in ("|", "/", "-", "–"):
+        if sep in s:
+            parts = [p.strip() for p in s.split(sep) if p.strip()]
+            if parts:
+                # Preferir o primeiro pedaço com letras
+                for p in parts:
+                    if any(ch.isalpha() for ch in p):
+                        s = p
+                        break
+
+    tokens = []
+    for t in s.split():
+        tt = t.replace(".", ",")
+        # remove medidas
+        if tt.endswith("m"):
+            num = tt[:-1]
+            if num.replace(",", "").isdigit():
+                continue
+        if tt.replace(",", "").isdigit():
+            continue
+        tokens.append(t)
+
+    s = " ".join(tokens).strip()
+    return s
+
+
+def build_suggested_fabric_color_groups(
+    models: List[Dict[str, Any]],
+    min_group_size: int = 2,
+) -> List[Dict[str, Any]]:
+    """Sugere agrupamentos automáticos por (tecido, cor).
+
+    Cada sugestão contém:
+    - fabric_key, color_key: chaves normalizadas
+    - fabric_label, color_label: para exibir
+    - model_keys: lista de chaves "item_id:model_id"
+    """
+    buckets: Dict[Tuple[str, str], List[str]] = {}
+
+    for m in models:
+        item_id = m.get("item_id")
+        model_id = m.get("model_id")
+        key = f"{item_id}:{model_id if model_id is not None else 'none'}"
+
+        fabric_key = extract_fabric_from_title(str(m.get("item_name") or ""))
+        color_key = extract_color_from_model(str(m.get("model_name") or ""), str(m.get("item_name") or ""))
+
+        if not fabric_key:
+            continue
+
+        buckets.setdefault((fabric_key, color_key), []).append(key)
+
+    out: List[Dict[str, Any]] = []
+    for (fabric_key, color_key), keys in buckets.items():
+        if len(keys) < int(min_group_size):
+            continue
+        out.append(
+            {
+                "fabric_key": fabric_key,
+                "color_key": color_key,
+                "fabric_label": _titleize_words(fabric_key),
+                "color_label": _titleize_words(color_key) if color_key else "(Sem cor)",
+                "model_keys": keys,
+                "count": len(keys),
+            }
+        )
+
+    out.sort(key=lambda d: (int(d.get("count") or 0), d.get("fabric_key") or "", d.get("color_key") or ""), reverse=True)
+    return out
 
 
 def suggest_master_name(models: List[Dict[str, Any]]) -> str:
@@ -825,9 +1192,7 @@ def suggest_master_name(models: List[Dict[str, Any]]) -> str:
 
     # title-case básico (mantendo palavras pequenas)
     out = " ".join(parts)
-    out = " ".join(w.capitalize() if w not in {"de", "da", "do", "das", "dos", "e"} else w for w in out.split())
-    out = out.replace("Offwhite", "Off White")
-    return out
+    return _titleize_words(out)
 
 
 # ==========================
@@ -1358,6 +1723,47 @@ def sidebar_setup() -> None:
             except Exception as exc:  # noqa: BLE001
                 st.sidebar.error(f"Erro ao sincronizar com a Shopee: {exc}")
 
+    # --- Importar / Exportar mapeamentos (groups.json) ---
+    with st.sidebar.expander("Importar/Exportar mapeamentos (Grupos)"):
+        st.caption(
+            "Use isso como backup/restauração. No Streamlit Cloud, o armazenamento local pode não persistir; "
+            "com backend remoto configurado, isso também salva/carrega do remoto."
+        )
+
+        try:
+            current_groups = load_groups()
+        except Exception as exc:  # noqa: BLE001
+            current_groups = []
+            st.error(f"Falha ao carregar grupos atuais: {exc}")
+
+        export_payload = {"groups": current_groups}
+        export_bytes = json.dumps(export_payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+        st.download_button(
+            "Baixar mapeamentos (groups.json)",
+            data=export_bytes,
+            file_name="groups.json",
+            mime="application/json",
+        )
+
+        uploaded = st.file_uploader(
+            "Carregar arquivo groups.json para restaurar", type=["json"], accept_multiple_files=False
+        )
+
+        if uploaded is not None:
+            try:
+                raw_text = uploaded.read().decode("utf-8")
+                imported_payload = json.loads(raw_text)
+                imported_groups = _validate_imported_groups_payload(imported_payload)
+                st.success(f"Arquivo lido. Grupos válidos encontrados: {len(imported_groups)}")
+
+                if st.button("Importar e SUBSTITUIR meus grupos"):
+                    save_groups(imported_groups)
+                    st.success("Importação concluída. Grupos atualizados.")
+                    st.rerun()
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Falha ao importar JSON: {exc}")
+
 
 def tab_mapping():
     """Aba 1: Mapeamento de Produtos (Cérebro)."""
@@ -1379,8 +1785,73 @@ def tab_mapping():
         f"Modelos não agrupados atualmente: **{len(ungrouped_models)}** (variações Shopee)."
     )
 
-    query = st.text_input("Buscar por título/variação (ex: 'Viscose'):")
-    filtered_models = search_models(ungrouped_models, query)
+    # --- Sugestões automáticas (pré-agrupamento) ---
+    if "mapping_suggestion_active" not in st.session_state:
+        st.session_state["mapping_suggestion_active"] = False
+    if "mapping_suggestion_keys" not in st.session_state:
+        st.session_state["mapping_suggestion_keys"] = []
+    if "mapping_selected_keys" not in st.session_state:
+        st.session_state["mapping_selected_keys"] = []
+
+    with st.expander("Sugestões automáticas (tecido + cor)"):
+        suggestions = build_suggested_fabric_color_groups(ungrouped_models, min_group_size=2)
+        if not suggestions:
+            st.info("Nenhuma sugestão automática encontrada (ainda).")
+        else:
+            # Mantém uma lista menor para não poluir a UI
+            max_show = 60
+            suggestions = suggestions[:max_show]
+
+            def _fmt_sug(d: Dict[str, Any]) -> str:
+                return f"{d.get('fabric_label')} | {d.get('color_label')} — {d.get('count')} variações"
+
+            selected_suggestion = st.selectbox(
+                "Escolha uma sugestão para carregar:",
+                options=list(range(len(suggestions))),
+                format_func=lambda i: _fmt_sug(suggestions[int(i)]),
+            )
+
+            cols = st.columns([1, 1, 2])
+            if cols[0].button("Carregar sugestão"):
+                sug = suggestions[int(selected_suggestion)]
+                st.session_state["mapping_suggestion_active"] = True
+                st.session_state["mapping_suggestion_keys"] = list(sug.get("model_keys") or [])
+                st.session_state["mapping_selected_keys"] = list(sug.get("model_keys") or [])
+
+                # Preenche Nome Mestre automaticamente (tecido + cor)
+                fabric_label = str(sug.get("fabric_label") or "").strip()
+                color_label = str(sug.get("color_label") or "").strip()
+                if color_label and color_label != "(Sem cor)":
+                    st.session_state["master_name_input"] = f"{fabric_label} {color_label}".strip()
+                else:
+                    st.session_state["master_name_input"] = fabric_label
+
+                st.rerun()
+
+            if st.session_state.get("mapping_suggestion_active"):
+                if cols[1].button("Limpar sugestão"):
+                    st.session_state["mapping_suggestion_active"] = False
+                    st.session_state["mapping_suggestion_keys"] = []
+                    st.session_state["mapping_selected_keys"] = []
+                    st.rerun()
+
+                cols[2].caption(
+                    "Dica: sugestões usam a âncora 'RAZAI' no título e o nome da variação como cor. "
+                    "Revise antes de salvar o grupo."
+                )
+
+    query = st.text_input("Buscar por título/variação (ex: 'Viscose'):", key="mapping_query")
+
+    if st.session_state.get("mapping_suggestion_active") and st.session_state.get("mapping_suggestion_keys"):
+        # Quando uma sugestão está ativa, mostramos apenas os itens sugeridos
+        filtered_models = [
+            m
+            for m in ungrouped_models
+            if f"{m.get('item_id')}:{m.get('model_id') if m.get('model_id') is not None else 'none'}"
+            in set(st.session_state.get("mapping_suggestion_keys") or [])
+        ]
+    else:
+        filtered_models = search_models(ungrouped_models, query)
 
     if not filtered_models:
         st.warning("Nenhum resultado encontrado para o filtro atual.")
@@ -1404,7 +1875,8 @@ def tab_mapping():
     selected_keys = st.multiselect(
         "Selecione as variações que pertencem ao MESMO tecido físico:",
         options=options_keys,
-        format_func=lambda k: f"{k} - {key_to_model[k]['display_name']}",
+        format_func=lambda k: str(key_to_model[k].get("short_display_name") or key_to_model[k].get("display_name") or ""),
+        key="mapping_selected_keys",
     )
 
     # Sugestão automática baseada nos títulos (tecido + estampa + cor)

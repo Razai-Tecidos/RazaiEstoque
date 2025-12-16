@@ -153,6 +153,35 @@ streamlit run app.py
 
 ---
 
+## Persistência no Streamlit Cloud (recomendado)
+
+No Streamlit Community Cloud, o filesystem pode ser **efêmero** (reinícios/deploys podem apagar `groups.json`).
+
+Para manter os mapeamentos de grupos persistentes, o app suporta um **backend remoto simples** via HTTP.
+Você configura uma URL que recebe/devolve JSON e (opcionalmente) um token.
+
+### Variáveis/Secrets suportados
+
+- `GROUPS_REMOTE_URL` (obrigatório para ativar)
+- `GROUPS_REMOTE_TOKEN` (opcional; enviado como `Authorization: Bearer <token>`)
+- `GROUPS_REMOTE_READ_METHOD` (opcional: `GET` ou `POST`, padrão `GET`)
+- `GROUPS_REMOTE_WRITE_METHOD` (opcional: `PUT` ou `POST`, padrão `PUT`)
+- `GROUPS_REMOTE_TIMEOUT` (opcional, segundos, padrão `15`)
+
+### Formato do payload
+
+O app salva sempre como:
+
+```json
+{ "groups": [ ... ] }
+```
+
+E também consegue ler caso a API retorne lista direta (`[ ... ]`).
+
+> Dica: para o backend remoto, você pode usar qualquer serviço que ofereça um endpoint de JSON (por exemplo, um endpoint próprio, um storage com HTTP, etc.).
+
+---
+
 ## Como usar o app (fluxo geral)
 
 1. **Acessar a interface**
