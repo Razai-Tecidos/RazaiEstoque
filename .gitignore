@@ -12,7 +12,7 @@ venv/
 .streamlit/
 
 # Local data
-groups.json
+# groups.json (Comentado para permitir persistência via Git Backend)
 
 # Local credentials (NEVER COMMIT)
 razaiestoque.txt
