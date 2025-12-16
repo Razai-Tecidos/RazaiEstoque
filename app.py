@@ -432,20 +432,44 @@ def refresh_group_names_from_models_cache(
                 mname = it.get("model_name", "")
                 if iname:
                     fab = extract_fabric_from_title(iname)
-                    # Só extrai cor do model_name se ele existir e for diferente do item_name
-                    col = ""
-                    if mname and mname.strip() and mname.strip().lower() != iname.strip().lower():
-                        col = extract_color_from_model(mname, "")
                     
                     if fab:
-                        # Monta nome: "Viscolinho Estampado Folhagem Azul" (já vem do título)
                         fab_clean = _titleize_words(fab)
                         
-                        # Só adiciona a cor separada se ela existir e NÃO for parte do fab
-                        if col:
-                            col_clean = _titleize_words(col)
-                            if col_clean.lower() not in fab_clean.lower():
-                                fab_clean = f"{fab_clean} {col_clean}"
+                        # Se o fab termina truncado (sem a cor completa) e temos model_name,
+                        # tenta completar usando a cor do model_name
+                        if mname and mname.strip():
+                            col = extract_color_from_model(mname, "")
+                            if col:
+                                col_clean = _titleize_words(col)
+                                # Verifica se a cor do model completa o que está faltando
+                                # Ex: fab="Viscolinho Estampado Folhagem Azul", col="Folhagem Azul E Laranja"
+                                # Queremos extrair apenas "E Laranja" que está faltando
+                                fab_lower = fab_clean.lower()
+                                col_lower = col_clean.lower()
+                                
+                                # Se a cor contém o final do fab, extrai a parte extra
+                                # Encontra a sobreposição máxima
+                                overlap_found = ""
+                                for i in range(len(col_lower)):
+                                    suffix = col_lower[i:]
+                                    if fab_lower.endswith(suffix.split()[0] if suffix.split() else ""):
+                                        # Encontrou sobreposição no início da cor
+                                        # Pega as palavras da cor que estão DEPOIS da primeira palavra
+                                        col_words = col_clean.split()
+                                        fab_words = fab_clean.split()
+                                        # Encontra onde começa a sobreposição
+                                        for j, cw in enumerate(col_words):
+                                            if fab_words and cw.lower() == fab_words[-1].lower():
+                                                # As palavras depois de j são a parte extra
+                                                extra = " ".join(col_words[j+1:])
+                                                if extra:
+                                                    overlap_found = extra
+                                                break
+                                        break
+                                
+                                if overlap_found:
+                                    fab_clean = f"{fab_clean} {overlap_found}"
                         
                         candidate = fab_clean.strip()
                         if len(candidate) > len(best_new_name):
