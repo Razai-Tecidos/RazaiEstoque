@@ -1344,20 +1344,22 @@ def extract_fabric_from_title(title: str) -> str:
     if " razai" in f" {s}":
         s = s.split("razai", 1)[0].strip()
 
-    # Remove prefixos comuns
-    for prefix in (
-        "tecido ",
-        "kit ",
-        "kit 3 metros ",
-        "kit 2 metros ",
-        "kit 1 metro ",
-    ):
-        if s.startswith(prefix):
-            s = s[len(prefix):].strip()
-
-    # Se ainda sobrou "kit" no começo, tirar
-    if s.startswith("kit "):
-        s = s[4:].strip()
+    # Remove prefixos comuns (loop para garantir remoção em cadeia, ex: "Kit 3 Metros Tecido...")
+    prefixes = [
+        "kit 3 metros ", "kit 2 metros ", "kit 1 metro ",
+        "kit ", "tecido ",
+        "3 metros ", "2 metros ", "1 metro ",
+        "3m ", "2m ", "1m ",
+    ]
+    while True:
+        changed = False
+        for p in prefixes:
+            if s.startswith(p):
+                s = s[len(p):].strip()
+                changed = True
+                break
+        if not changed:
+            break
 
     # Marcadores de corte (normalizados) para limpar sufixos de marketing/medidas
     # Ex: "cetim charmousse 1,50m largura..." -> "cetim charmousse"
@@ -1374,6 +1376,7 @@ def extract_fabric_from_title(title: str) -> str:
 
     # Remove palavras muito genéricas que atrapalham agrupamento
     junk_words = {
+        "tecido",
         "metro",
         "metros",
         "largura",
