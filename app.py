@@ -424,12 +424,23 @@ def refresh_group_names_from_models_cache(
         # Condição de reparo: termina com " e" OU é curto demais
         if current_master.endswith(" e") or len(current_master.split()) <= 3:
             
-            # 1. Tenta extração robusta (Fabric + Color Extractor) - A mesma usada na criação automática
-            # Pega o primeiro item válido para extrair
+            # 1. Tenta extração robusta usando dados FRESCOS do models_cache (via index)
             best_new_name = ""
             for it in new_items:
-                iname = it.get("item_name", "")
-                mname = it.get("model_name", "")
+                try:
+                    iid = int(it.get("item_id"))
+                except Exception:
+                    continue
+                mid = it.get("model_id")
+                
+                # Busca dados frescos do models_cache (não os dados truncados do grupo)
+                fresh_data = index.get((iid, mid))
+                if not fresh_data:
+                    continue
+                    
+                iname = fresh_data.get("item_name", "")
+                mname = fresh_data.get("model_name", "")
+                
                 if iname:
                     fab = extract_fabric_from_title(iname)
                     
