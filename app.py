@@ -2287,9 +2287,18 @@ def _render_inventory_table(df: pd.DataFrame, groups: List[Dict], client: Option
         with st.status("Processando atualizações...", expanded=True) as status:
             for index, row in edited_df.iterrows():
                 new_val = row["Novo Estoque"]
+                
+                # Se for lista, pega o primeiro elemento
+                if isinstance(new_val, list):
+                    new_val = new_val[0] if new_val else None
+                
                 st.write(f"🔍 DEBUG row {index}: Novo Estoque = '{new_val}' (type={type(new_val).__name__})")  # DEBUG
                 
-                if pd.isna(new_val) or new_val is None or str(new_val).strip() == "":
+                if pd.isna(new_val) if not isinstance(new_val, list) else False:
+                    st.write(f"   ⏭️ Pulando - valor NaN")  # DEBUG
+                    continue
+                    
+                if new_val is None or str(new_val).strip() == "":
                     st.write(f"   ⏭️ Pulando - valor vazio ou None")  # DEBUG
                     continue
                 
