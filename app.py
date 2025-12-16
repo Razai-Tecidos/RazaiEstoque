@@ -432,18 +432,22 @@ def refresh_group_names_from_models_cache(
                 mname = it.get("model_name", "")
                 if iname:
                     fab = extract_fabric_from_title(iname)
-                    col = extract_color_from_model(mname, iname)
+                    # Só extrai cor do model_name se ele existir e for diferente do item_name
+                    col = ""
+                    if mname and mname.strip() and mname.strip().lower() != iname.strip().lower():
+                        col = extract_color_from_model(mname, "")
+                    
                     if fab:
-                        # Monta nome: "Viscolinho" + " " + "Folhagem Azul"
+                        # Monta nome: "Viscolinho Estampado Folhagem Azul" (já vem do título)
                         fab_clean = _titleize_words(fab)
-                        col_clean = _titleize_words(col) if col and col != "(Sem cor)" else ""
                         
-                        parts = [fab_clean]
-                        # Só adiciona a cor se ela NÃO estiver contida no nome do tecido/título
-                        if col_clean and col_clean.lower() not in fab_clean.lower():
-                            parts.append(col_clean)
+                        # Só adiciona a cor separada se ela existir e NÃO for parte do fab
+                        if col:
+                            col_clean = _titleize_words(col)
+                            if col_clean.lower() not in fab_clean.lower():
+                                fab_clean = f"{fab_clean} {col_clean}"
                         
-                        candidate = " ".join(parts).strip()
+                        candidate = fab_clean.strip()
                         if len(candidate) > len(best_new_name):
                             best_new_name = candidate
             
