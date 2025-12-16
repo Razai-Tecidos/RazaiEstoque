@@ -2117,6 +2117,23 @@ def tab_inventory():
     client: Optional[ShopeeClient] = st.session_state.get("client")
     models_cache: List[Dict[str, Any]] = st.session_state.get("models_cache", [])
 
+    col_refresh, col_hint = st.columns([1, 3])
+    if col_refresh.button("Recarregar estoque atual da Shopee"):
+        if not client:
+            st.error("Cliente Shopee não inicializado. Configure e sincronize na barra lateral.")
+        else:
+            try:
+                with st.spinner("Recarregando itens e estoques da Shopee..."):
+                    fresh_cache = build_models_cache(client)
+                st.session_state["models_cache"] = fresh_cache
+                st.session_state["last_sync_ts"] = int(time.time())
+                st.success(f"Estoque recarregado. Modelos: {len(fresh_cache)}")
+                st.rerun()
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Falha ao recarregar estoque: {exc}")
+
+    col_hint.caption("Dica: isso atualiza os números de estoque exibidos abaixo.")
+
     groups = load_groups()
     if not groups:
         st.info("Nenhum grupo mestre criado ainda. Use a Aba 1 para criar.")
