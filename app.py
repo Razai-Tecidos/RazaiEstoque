@@ -2269,7 +2269,10 @@ def _render_inventory_table(df: pd.DataFrame, groups: List[Dict], client: Option
                     continue
                 
                 group_id = row["group_id"]
-                new_stock = int(new_val)
+                try:
+                    new_stock = int(float(new_val))
+                except (ValueError, TypeError):
+                    continue
                 
                 # Encontra o grupo original
                 group = next((g for g in groups if g["group_id"] == group_id), None)
