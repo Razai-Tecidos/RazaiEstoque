@@ -2218,566 +2218,426 @@ def sidebar_setup() -> None:
                 st.error(f"Falha ao importar JSON: {exc}")
 
 
-def tab_mapping():
-    """Aba 1: Mapeamento de Produtos (Cérebro)."""
-    st.subheader("Aba 1 - Mapeamento de Produtos (Cérebro)")
+def view_mapping():
+    """View: Mapeamento de Produtos (Cérebro)."""
+    st.header("Mapeamento de Produtos")
+    st.caption("Agrupe variações da Shopee em produtos mestres para controle unificado.")
 
     client: Optional[ShopeeClient] = st.session_state.get("client")
     models_cache: List[Dict[str, Any]] = st.session_state.get("models_cache", [])
 
     if not client or not models_cache:
-        st.info(
-            "Configure as credenciais e clique em 'Sincronizar Dados da Shopee' na barra lateral."
-        )
+        st.info("⚠️ Configure as credenciais e clique em 'Sincronizar Dados da Shopee' na barra lateral.")
         return
 
     groups = load_groups()
     ungrouped_models = filter_ungrouped_models(models_cache, groups)
 
-    st.write(
-        f"Modelos não agrupados atualmente: **{len(ungrouped_models)}** (variações Shopee)."
-    )
+    # --- Métricas do Mapeamento ---
+    col_m1, col_m2, col_m3 = st.columns(3)
+    col_m1.metric("Total de Variações", len(models_cache))
+    col_m2.metric("Já Agrupados", len(models_cache) - len(ungrouped_models))
+    col_m3.metric("Pendentes de Agrupamento", len(ungrouped_models), delta_color="inverse")
 
-    # --- Sugestões automáticas (pré-agrupamento) ---
-    if "mapping_suggestion_active" not in st.session_state:
-        st.session_state["mapping_suggestion_active"] = False
-    if "mapping_suggestion_keys" not in st.session_state:
-        st.session_state["mapping_suggestion_keys"] = []
-    if "mapping_selected_keys" not in st.session_state:
-        st.session_state["mapping_selected_keys"] = []
+    st.divider()
 
-    with st.expander("Sugestões automáticas (tecido + cor)"):
+    # --- Sugestões automáticas ---
+    with st.expander("✨ Sugestões Automáticas (Tecido + Cor)", expanded=True):
         suggestions_all = build_suggested_fabric_color_groups(ungrouped_models, min_group_size=2)
-        suggestions = suggestions_all
-        if not suggestions:
-            st.info("Nenhuma sugestão automática encontrada (ainda).")
+        
+        if not suggestions_all:
+            st.info("Nenhuma sugestão automática encontrada no momento.")
         else:
-            # Mantém uma lista menor para não poluir a UI
-            max_show = 60
-            suggestions = suggestions[:max_show]
-
-            def _fmt_sug(d: Dict[str, Any]) -> str:
-                return f"{d.get('fabric_label')} | {d.get('color_label')} — {d.get('count')} variações"
-
-            selected_suggestion = st.selectbox(
-                "Escolha uma sugestão para carregar:",
-                options=list(range(len(suggestions))),
-                format_func=lambda i: _fmt_sug(suggestions[int(i)]),
-            )
-
-            cols = st.columns([1, 1, 2])
-            if cols[0].button("Carregar sugestão"):
-                sug = suggestions[int(selected_suggestion)]
-                st.session_state["mapping_suggestion_active"] = True
-                st.session_state["mapping_suggestion_keys"] = list(sug.get("model_keys") or [])
-                st.session_state["mapping_selected_keys"] = list(sug.get("model_keys") or [])
-
-                # Preenche Nome Mestre automaticamente (tecido + cor)
-                fabric_label = str(sug.get("fabric_label") or "").strip()
-                color_label = str(sug.get("color_label") or "").strip()
-                if color_label and color_label != "(Sem cor)":
-                    st.session_state["master_name_input"] = f"{fabric_label} {color_label}".strip()
-                else:
-                    st.session_state["master_name_input"] = fabric_label
-
-                st.rerun()
-
-            # Criação automática em massa (sem precisar salvar grupo a grupo)
-            if cols[2].button("Criar TODOS os grupos sugeridos"):
-                # Índice rápido model_key -> model
-                model_by_key: Dict[str, Dict[str, Any]] = {}
-                for m in ungrouped_models:
-                    mk = f"{m.get('item_id')}:{m.get('model_id') if m.get('model_id') is not None else 'none'}"
-                    model_by_key[mk] = m
-
-                groups = load_groups()
-                created = 0
-                skipped = 0
-                with st.spinner("Criando grupos automaticamente..."):
-                    for sug in suggestions_all:
-                        model_keys = list(sug.get("model_keys") or [])
-                        selected_models = [model_by_key.get(k) for k in model_keys]
-                        selected_models = [m for m in selected_models if m is not None]
-
-                        if len(selected_models) < 2:
-                            skipped += 1
-                            continue
-
-                        fabric_label = str(sug.get("fabric_label") or "").strip()
-                        color_label = str(sug.get("color_label") or "").strip()
-                        master_name = f"{fabric_label} {color_label}".strip() if color_label and color_label != "(Sem cor)" else fabric_label
-                        if not master_name:
-                            skipped += 1
-                            continue
-
-                        group_id = str(uuid.uuid4())
-                        item_ids = sorted({int(m["item_id"]) for m in selected_models})
-                        model_ids = sorted({int(m["model_id"]) for m in selected_models if m.get("model_id") is not None})
-
-                        new_group = {
-                            "group_id": group_id,
-                            "master_name": master_name,
-                            "items": [
-                                {
-                                    "item_id": int(m["item_id"]),
-                                    "model_id": m.get("model_id"),
-                                    "item_name": m.get("item_name", ""),
-                                    "model_name": m.get("model_name", ""),
-                                }
-                                for m in selected_models
-                            ],
-                            "shopee_item_ids": item_ids,
-                            "shopee_model_ids": model_ids,
-                        }
-
-                        groups.append(new_group)
-                        created += 1
-
-                try:
-                    save_groups(groups)
-                    st.success(f"Grupos criados automaticamente: {created} (ignorados: {skipped}).")
-                    st.session_state["mapping_suggestion_active"] = False
-                    st.session_state["mapping_suggestion_keys"] = []
-                    st.session_state["mapping_selected_keys"] = []
-                    st.rerun()
-                except Exception as exc:  # noqa: BLE001
-                    st.error(f"Falha ao salvar grupos criados automaticamente: {exc}")
-
-            if st.session_state.get("mapping_suggestion_active"):
-                if cols[1].button("Limpar sugestão"):
-                    st.session_state["mapping_suggestion_active"] = False
-                    st.session_state["mapping_suggestion_keys"] = []
-                    st.session_state["mapping_selected_keys"] = []
-                    st.rerun()
-
-                cols[2].caption(
-                    "Dica: sugestões usam a âncora 'RAZAI' no título e o nome da variação como cor. "
-                    "Revise antes de salvar o grupo."
+            # Prepara dados para tabela de sugestões
+            sug_data = []
+            for i, s in enumerate(suggestions_all[:50]): # Limit to 50
+                sug_data.append({
+                    "ID": i,
+                    "Tecido": s.get("fabric_label"),
+                    "Cor": s.get("color_label"),
+                    "Qtd Variações": s.get("count"),
+                    "Exemplo": s.get("example_name")
+                })
+            
+            df_sug = pd.DataFrame(sug_data)
+            
+            # Layout de seleção de sugestão
+            col_s1, col_s2 = st.columns([3, 1])
+            
+            with col_s1:
+                st.dataframe(
+                    df_sug, 
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "ID": st.column_config.NumberColumn("ID", width="small"),
+                        "Qtd Variações": st.column_config.ProgressColumn(
+                            "Variações", 
+                            format="%d", 
+                            min_value=0, 
+                            max_value=max([s['count'] for s in suggestions_all]) if suggestions_all else 10
+                        ),
+                    }
                 )
 
-    with st.expander("Ver itens ignorados nas sugestões (Diagnóstico)"):
-        st.caption("Lista de itens que não entraram nas sugestões automáticas e o motivo.")
+            with col_s2:
+                st.markdown("##### Ações")
+                selected_id = st.number_input("ID da Sugestão", min_value=0, max_value=len(sug_data)-1 if sug_data else 0, step=1)
+                
+                if st.button("Carregar Sugestão", use_container_width=True):
+                    sug = suggestions_all[int(selected_id)]
+                    st.session_state["mapping_suggestion_active"] = True
+                    st.session_state["mapping_suggestion_keys"] = list(sug.get("model_keys") or [])
+                    st.session_state["mapping_selected_keys"] = list(sug.get("model_keys") or [])
 
-        # Re-executa lógica similar para diagnosticar
-        diagnosis_data = []
-        temp_buckets: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+                    # Preenche Nome Mestre
+                    fabric_label = str(sug.get("fabric_label") or "").strip()
+                    color_label = str(sug.get("color_label") or "").strip()
+                    if color_label and color_label != "(Sem cor)":
+                        st.session_state["master_name_input"] = f"{fabric_label} {color_label}".strip()
+                    else:
+                        st.session_state["master_name_input"] = fabric_label
+                    st.rerun()
 
-        for m in ungrouped_models:
-            fabric_key = extract_fabric_from_title(str(m.get("item_name") or ""))
-            if not fabric_key:
-                diagnosis_data.append({
-                    "Item": m.get("display_name"),
-                    "Motivo": "Tecido não identificado (título fora do padrão?)"
-                })
-                continue
+                if st.button("Criar TODAS (Auto)", type="primary", use_container_width=True):
+                    # Lógica de criação em massa (mantida do original)
+                    model_by_key = {}
+                    for m in ungrouped_models:
+                        mk = f"{m.get('item_id')}:{m.get('model_id') if m.get('model_id') is not None else 'none'}"
+                        model_by_key[mk] = m
 
-            color_key = extract_color_from_model(str(m.get("model_name") or ""), str(m.get("item_name") or ""))
-            temp_buckets.setdefault((fabric_key, color_key), []).append(m)
+                    groups = load_groups()
+                    created = 0
+                    with st.spinner("Processando..."):
+                        for sug in suggestions_all:
+                            model_keys = list(sug.get("model_keys") or [])
+                            selected_models = [model_by_key.get(k) for k in model_keys if model_by_key.get(k)]
+                            
+                            if len(selected_models) < 2: continue
+                            
+                            fabric_label = str(sug.get("fabric_label") or "").strip()
+                            color_label = str(sug.get("color_label") or "").strip()
+                            master_name = f"{fabric_label} {color_label}".strip() if color_label and color_label != "(Sem cor)" else fabric_label
+                            
+                            if not master_name: continue
 
-        for (fk, ck), items in temp_buckets.items():
-            if len(items) < 2:
-                for m in items:
-                    diagnosis_data.append({
-                        "Item": m.get("display_name"),
-                        "Motivo": f"Grupo isolado (único item com Tecido='{fk}' e Cor='{ck}')"
-                    })
+                            group_id = str(uuid.uuid4())
+                            item_ids = sorted({int(m["item_id"]) for m in selected_models})
+                            model_ids = sorted({int(m["model_id"]) for m in selected_models if m.get("model_id") is not None})
 
-        if diagnosis_data:
-            st.dataframe(pd.DataFrame(diagnosis_data), use_container_width=True)
-        else:
-            st.info("Todos os itens não agrupados geraram alguma sugestão.")
+                            new_group = {
+                                "group_id": group_id,
+                                "master_name": master_name,
+                                "items": [
+                                    {"item_id": int(m["item_id"]), "model_id": m.get("model_id"), "item_name": m.get("item_name", ""), "model_name": m.get("model_name", "")}
+                                    for m in selected_models
+                                ],
+                                "shopee_item_ids": item_ids,
+                                "shopee_model_ids": model_ids,
+                            }
+                            groups.append(new_group)
+                            created += 1
+                    
+                    save_groups(groups)
+                    st.success(f"{created} grupos criados!")
+                    st.rerun()
 
-    query = st.text_input("Buscar por título/variação (ex: 'Viscose'):", key="mapping_query")
+    st.divider()
 
+    # --- Área de Trabalho (Manual) ---
+    st.subheader("Área de Trabalho Manual")
+    
+    col_search, col_name = st.columns([2, 2])
+    query = col_search.text_input("🔍 Buscar Variação", placeholder="Digite para filtrar...", key="mapping_query")
+    
+    # Filtragem
     if st.session_state.get("mapping_suggestion_active") and st.session_state.get("mapping_suggestion_keys"):
-        # Quando uma sugestão está ativa, mostramos apenas os itens sugeridos
         filtered_models = [
-            m
-            for m in ungrouped_models
+            m for m in ungrouped_models
             if f"{m.get('item_id')}:{m.get('model_id') if m.get('model_id') is not None else 'none'}"
             in set(st.session_state.get("mapping_suggestion_keys") or [])
         ]
+        st.info("Modo Sugestão Ativo. Clique em 'Limpar Filtro' para ver todos.", icon="ℹ️")
+        if st.button("Limpar Filtro"):
+            st.session_state["mapping_suggestion_active"] = False
+            st.session_state["mapping_suggestion_keys"] = []
+            st.rerun()
     else:
         filtered_models = search_models(ungrouped_models, query)
 
-    if not filtered_models:
-        st.warning("Nenhum resultado encontrado para o filtro atual.")
-        return
-
-    # Monta dicionário para multiseleção
+    # Tabela de Seleção (Multiselect melhorado)
     options_keys = []
-    key_to_model: Dict[str, Dict[str, Any]] = {}
-    labels = []
+    key_to_model = {}
     for m in filtered_models:
         item_id = m.get("item_id")
         model_id = m.get("model_id")
         key = f"{item_id}:{model_id if model_id is not None else 'none'}"
-        label = f"[{item_id}/{model_id if model_id is not None else '-'}] {m.get('display_name', '')}"
         options_keys.append(key)
         key_to_model[key] = m
-        labels.append(label)
 
-    # Usamos multiselect com rótulos amigáveis
-    # Para manter chave estável, usamos options=options_keys e format_func.
-    selected_keys = st.multiselect(
-        "Selecione as variações que pertencem ao MESMO tecido físico:",
-        options=options_keys,
-        format_func=lambda k: str(key_to_model[k].get("short_display_name") or key_to_model[k].get("display_name") or ""),
-        key="mapping_selected_keys",
-    )
+    # Container com estilo de "Card"
+    with st.container(border=True):
+        selected_keys = st.multiselect(
+            "Selecione as variações para agrupar:",
+            options=options_keys,
+            format_func=lambda k: f"{key_to_model[k].get('display_name', '')} (Estoque: {key_to_model[k].get('normal_stock')})",
+            key="mapping_selected_keys",
+            placeholder="Escolha 2 ou mais itens..."
+        )
 
-    # Sugestão automática baseada nos títulos (tecido + estampa + cor)
-    if st.button("Sugerir Nome Mestre pelos títulos"):
         if selected_keys:
-            selected_models = [key_to_model[k] for k in selected_keys]
-            st.session_state["master_name_input"] = suggest_master_name(selected_models)
-        else:
-            st.warning("Selecione ao menos uma variação para sugerir o nome.")
+            st.markdown("---")
+            c1, c2 = st.columns([3, 1])
+            
+            # Sugestão de nome
+            suggested_name = ""
+            if selected_keys:
+                selected_models = [key_to_model[k] for k in selected_keys]
+                suggested_name = suggest_master_name(selected_models)
+            
+            # Se o input já tiver valor (do botão de sugestão), usa ele, senão usa o sugerido
+            current_input = st.session_state.get("master_name_input", "")
+            if not current_input and suggested_name:
+                 st.session_state["master_name_input"] = suggested_name
 
-    master_name = st.text_input(
-        "Nome Mestre para o grupo (ex: 'Viscose Estampada Azul'):",
-        key="master_name_input",
-    )
+            master_name = c1.text_input("Nome do Novo Grupo", key="master_name_input")
+            
+            if c2.button("Salvar Grupo", type="primary", use_container_width=True):
+                if not master_name:
+                    st.error("Defina um nome para o grupo.")
+                else:
+                    # Salvar
+                    selected_models = [key_to_model[k] for k in selected_keys]
+                    group_id = str(uuid.uuid4())
+                    item_ids = sorted({int(m["item_id"]) for m in selected_models})
+                    model_ids = sorted({int(m["model_id"]) for m in selected_models if m.get("model_id") is not None})
 
-    if st.button("Salvar Grupo"):
-        if not selected_keys:
-            st.error("Selecione ao menos uma variação para criar o grupo.")
-            return
-        if not master_name.strip():
-            st.error("Informe um Nome Mestre para o grupo.")
-            return
-
-        selected_models = [key_to_model[k] for k in selected_keys]
-
-        group_id = str(uuid.uuid4())
-        item_ids = sorted({int(m["item_id"]) for m in selected_models})
-        model_ids = sorted(
-            {
-                int(m["model_id"])
-                for m in selected_models
-                if m.get("model_id") is not None
-            }
-        )
-
-        new_group = {
-            "group_id": group_id,
-            "master_name": master_name.strip(),
-            "items": [
-                {
-                    "item_id": int(m["item_id"]),
-                    "model_id": m.get("model_id"),
-                    "item_name": m.get("item_name", ""),
-                    "model_name": m.get("model_name", ""),
-                }
-                for m in selected_models
-            ],
-            # Estrutura de exemplo solicitada no enunciado
-            "shopee_item_ids": item_ids,
-            "shopee_model_ids": model_ids,
-        }
-
-        groups.append(new_group)
-        try:
-            save_groups(groups)
-        except Exception as exc:  # noqa: BLE001
-            st.error(f"Falha ao salvar o grupo no JSON local: {exc}")
-            return
-
-        st.success(
-            f"Grupo criado com sucesso: '{master_name.strip()}' com {len(selected_models)} variações."
-        )
-
-        # Atualiza imediatamente a visão removendo os modelos recém-agrupados
-        try:
-            st.rerun()
-        except Exception:
-            st.experimental_rerun()
+                    new_group = {
+                        "group_id": group_id,
+                        "master_name": master_name.strip(),
+                        "items": [
+                            {"item_id": int(m["item_id"]), "model_id": m.get("model_id"), "item_name": m.get("item_name", ""), "model_name": m.get("model_name", "")}
+                            for m in selected_models
+                        ],
+                        "shopee_item_ids": item_ids,
+                        "shopee_model_ids": model_ids,
+                    }
+                    groups.append(new_group)
+                    save_groups(groups)
+                    st.success("Grupo salvo!")
+                    st.session_state["mapping_selected_keys"] = []
+                    st.session_state["master_name_input"] = ""
+                    st.rerun()
 
 
-def tab_inventory():
-    """Aba 2: Gestão de Estoque (Painel de Controle)."""
-    st.subheader("Aba 2 - Gestão de Estoque (Painel de Controle)")
-
+def view_dashboard():
+    """View: Dashboard e Gestão de Estoque."""
+    st.header("Visão Geral de Estoque")
+    
     client: Optional[ShopeeClient] = st.session_state.get("client")
     models_cache: List[Dict[str, Any]] = st.session_state.get("models_cache", [])
-
-    col_refresh, col_hint = st.columns([1, 3])
-    if col_refresh.button("Recarregar estoque atual da Shopee"):
-        if not client:
-            st.error("Cliente Shopee não inicializado. Configure e sincronize na barra lateral.")
-        else:
-            try:
-                with st.spinner("Recarregando itens e estoques da Shopee..."):
-                    fresh_cache = build_models_cache(client)
-                st.session_state["models_cache"] = fresh_cache
-                st.session_state["last_sync_ts"] = int(time.time())
-                with_stock = sum(1 for m in fresh_cache if m.get("normal_stock") is not None)
-                st.success(f"Estoque recarregado. Modelos: {len(fresh_cache)} | Com estoque: {with_stock}")
-                st.rerun()
-            except Exception as exc:  # noqa: BLE001
-                st.error(f"Falha ao recarregar estoque: {exc}")
-
-    col_hint.caption("Dica: isso atualiza os números de estoque exibidos abaixo.")
-
-    # Teste rápido (somente leitura) para ajudar debug de estoque/credenciais
-    with st.expander("Teste de requisição (somente leitura)"):
-        st.caption(
-            "Roda um preflight na Shopee para verificar se o app consegue ler itens/models e se a resposta contém campos de estoque. "
-            "Isso não altera nada na loja."
-        )
-        if st.button("Executar teste de requisição"):
-            if not client:
-                st.error("Cliente Shopee não inicializado. Configure e sincronize na barra lateral.")
-            else:
-                try:
-                    # Preferir testar usando um item que exista nos grupos (mais relevante)
-                    groups_for_test = load_groups()
-                    sample_item_id = None
-                    for g in groups_for_test:
-                        items = g.get("items", []) or []
-                        if items:
-                            try:
-                                sample_item_id = int(items[0].get("item_id"))
-                                break
-                            except Exception:
-                                continue
-
-                    with st.spinner("Executando preflight de leitura..."):
-                        info = client.preflight_read_check(sample_item_id=sample_item_id)
-                    st.success("Teste OK. Veja detalhes:")
-                    st.json(info)
-                except Exception as exc:  # noqa: BLE001
-                    st.error(f"Teste falhou: {exc}")
-
     groups = load_groups()
+
+    # --- Top Bar Actions ---
+    col_act1, col_act2 = st.columns([3, 1])
+    with col_act2:
+        if st.button("🔄 Recarregar Shopee", use_container_width=True):
+            if client:
+                with st.spinner("Atualizando..."):
+                    fresh = build_models_cache(client)
+                    st.session_state["models_cache"] = fresh
+                    st.session_state["last_sync_ts"] = int(time.time())
+                st.rerun()
+            else:
+                st.error("Conecte-se primeiro.")
+
+    # --- Metrics Cards ---
+    total_groups = len(groups)
+    total_items_linked = sum(len(g.get("items", [])) for g in groups)
+    
+    # Calcula estoque médio global
+    total_stock_sum = 0
+    count_stock = 0
+    
+    # Mapa de estoque atual
+    stock_map = {} # (item_id, model_id) -> stock
+    for m in models_cache:
+        mid = int(m.get("model_id")) if m.get("model_id") is not None else None
+        stock_map[(int(m.get("item_id")), mid)] = m.get("normal_stock", 0)
+
+    for g in groups:
+        for it in g.get("items", []):
+            mid = int(it.get("model_id")) if it.get("model_id") is not None else None
+            s = stock_map.get((int(it.get("item_id")), mid), 0)
+            total_stock_sum += s
+            count_stock += 1
+            
+    avg_stock = int(total_stock_sum / count_stock) if count_stock > 0 else 0
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Grupos Ativos", total_groups)
+    m2.metric("Anúncios Vinculados", total_items_linked)
+    m3.metric("Estoque Médio", avg_stock)
+    m4.metric("Status API", "Online" if client else "Offline", delta_color="normal" if client else "off")
+
+    st.divider()
+
     if not groups:
-        st.info("Nenhum grupo mestre criado ainda. Use a Aba 1 para criar.")
+        st.info("Nenhum grupo criado. Vá para 'Mapeamento' para começar.")
         return
 
-    if not client:
-        st.warning(
-            "Configurações de credenciais não encontradas. Configure e sincronize na barra lateral antes de atualizar estoques."
-        )
-
-    # Índice rápido para obter estoque atual de cada (item_id, model_id)
-    def _norm_mid(mid: Any) -> Optional[int]:
-        if mid is None:
-            return None
-        try:
-            return int(mid)
-        except Exception:
-            return None
-
-    stock_index: Dict[Tuple[int, Optional[int]], Optional[int]] = {}
-    cache_positions: Dict[Tuple[int, Optional[int]], List[int]] = {}
-    for idx, m in enumerate(models_cache):
-        key = (int(m.get("item_id")), _norm_mid(m.get("model_id")))
-        stock_index[key] = m.get("normal_stock")
-        cache_positions.setdefault(key, []).append(idx)
-
-    st.markdown("**Grupos Mestres cadastrados (organizados por tecido):**")
-
-    def _group_fabric_key(g: Dict[str, Any]) -> str:
-        # Preferir inferir pelo título do item (mais consistente que master_name)
-        items = g.get("items", []) or []
-        counts: Dict[str, int] = {}
-        for it in items:
-            fk = extract_fabric_from_title(str(it.get("item_name") or ""))
-            if fk:
-                counts[fk] = counts.get(fk, 0) + 1
-        if counts:
-            return max(counts.items(), key=lambda kv: kv[1])[0]
-
-        # Fallback: tenta usar o começo do master_name (antes de cor comum)
-        mk = extract_fabric_from_title(str(g.get("master_name") or ""))
-        return mk or "(sem tecido)"
-
-    # Agrupa por tecido
-    fabric_to_groups: Dict[str, List[Dict[str, Any]]] = {}
+    # --- Tabela Principal (Dataframe) ---
+    # Prepara dados para exibição tabular limpa
+    table_data = []
     for g in groups:
-        fabric_key = _group_fabric_key(g)
-        fabric_to_groups.setdefault(fabric_key, []).append(g)
+        # Calcula estoque médio deste grupo
+        g_stocks = []
+        for it in g.get("items", []):
+            mid = int(it.get("model_id")) if it.get("model_id") is not None else None
+            s = stock_map.get((int(it.get("item_id")), mid))
+            if s is not None: g_stocks.append(s)
+        
+        curr_stock = int(sum(g_stocks)/len(g_stocks)) if g_stocks else 0
+        
+        table_data.append({
+            "group_id": g.get("group_id"),
+            "Nome do Grupo": g.get("master_name"),
+            "Variações": len(g.get("items", [])),
+            "Estoque Atual": curr_stock,
+            "Novo Estoque": None # Placeholder para edição
+        })
 
-    # Ordenação estável por rótulo legível
-    fabric_keys_sorted = sorted(
-        fabric_to_groups.keys(),
-        key=lambda k: (_titleize_words(k) if k and k != "(sem tecido)" else "zzz"),
+    df = pd.DataFrame(table_data)
+
+    # Edição de Estoque em Tabela
+    st.subheader("Atualização em Massa")
+    st.caption("Edite a coluna 'Novo Estoque' e clique em Salvar no final da página.")
+
+    edited_df = st.data_editor(
+        df,
+        column_config={
+            "group_id": None, # Esconde ID
+            "Nome do Grupo": st.column_config.TextColumn("Nome do Produto (Grupo)", width="large", disabled=True),
+            "Variações": st.column_config.NumberColumn("Qtd. Anúncios", disabled=True),
+            "Estoque Atual": st.column_config.ProgressColumn(
+                "Estoque Atual", 
+                format="%d", 
+                min_value=0, 
+                max_value=max(df["Estoque Atual"]) if not df.empty else 100,
+            ),
+            "Novo Estoque": st.column_config.NumberColumn(
+                "Novo Estoque (Editar)", 
+                min_value=0, 
+                step=1,
+                required=False
+            )
+        },
+        hide_index=True,
+        use_container_width=True,
+        key="inventory_editor"
     )
 
-    for fabric_key in fabric_keys_sorted:
-        fabric_label = _titleize_words(fabric_key) if fabric_key and fabric_key != "(sem tecido)" else "(Sem tecido)"
-        st.markdown(f"### {fabric_label}")
-
-        # Cabeçalho da "tabela visual" por tecido
-        header_cols = st.columns([3, 2, 3, 2])
-        header_cols[0].markdown("**Nome Mestre**")
-        header_cols[1].markdown("**Qtd Itens Vinculados**")
-        header_cols[2].markdown("**Estoque Atual (Média)**")
-        header_cols[3].markdown("**Novo Estoque**")
-
-        # Campos de entrada (um por grupo)
-        for g in fabric_to_groups.get(fabric_key, []):
-            group_id = g.get("group_id")
-            items = g.get("items", [])
-
-            # Calcula soma/média usando o índice de estoque
-            stocks: List[int] = []
-            for it in items:
-                key = (int(it.get("item_id")), _norm_mid(it.get("model_id")))
-                s = stock_index.get(key)
-                if s is not None:
-                    stocks.append(int(s))
-
-            if stocks:
-                media = sum(stocks) / len(stocks)
-                # Mostra como inteiro quando faz sentido
-                estoque_str = f"{media:.1f}" if abs(media - round(media)) > 1e-9 else f"{int(round(media))}"
-            else:
-                estoque_str = "-"
-
-            cols = st.columns([3, 2, 3, 2])
-            cols[0].write(g.get("master_name", "(sem nome)"))
-            cols[1].write(len(items))
-            cols[2].write(estoque_str)
-
-            # Campo de digitação do novo estoque (string, para permitir vazio)
-            cols[3].text_input(
-                "",
-                key=f"new_stock_{group_id}",
-                placeholder="ex: 0",
-            )
-
-    if st.button("Atualizar Estoque em Massa"):
+    # Botão de Salvar
+    st.markdown("<br>", unsafe_allow_html=True)
+    col_save, _ = st.columns([1, 4])
+    
+    if col_save.button("💾 Aplicar Alterações de Estoque", type="primary"):
         if not client:
-            st.error(
-                "Cliente Shopee não inicializado. Configure credenciais e sincronize na barra lateral."
-            )
+            st.error("Conecte-se à Shopee primeiro.")
             return
 
-        # Preflight (somente leitura) antes de atualizar, para evitar operação cega.
-        try:
-            groups_for_test = groups
-            sample_item_id = None
-            for g in groups_for_test:
-                items = g.get("items", []) or []
-                if items:
+        # Processa alterações
+        updates = []
+        # Compara edited_df com original (table_data) ou apenas itera sobre edited_df
+        # O data_editor retorna o dataframe com os valores editados.
+        # Filtramos onde "Novo Estoque" não é NaN/None
+        
+        changes_count = 0
+        errors = []
+        
+        with st.status("Processando atualizações...", expanded=True) as status:
+            for index, row in edited_df.iterrows():
+                new_val = row["Novo Estoque"]
+                if pd.isna(new_val) or new_val is None or str(new_val).strip() == "":
+                    continue
+                
+                group_id = row["group_id"]
+                new_stock = int(new_val)
+                
+                # Encontra o grupo original
+                group = next((g for g in groups if g["group_id"] == group_id), None)
+                if not group: continue
+
+                status.write(f"Atualizando '{group['master_name']}' para {new_stock}...")
+                
+                # Lógica de update (copiada do original)
+                per_item = {}
+                for it in group.get("items", []):
+                    item_id = int(it.get("item_id"))
+                    model_id = int(it.get("model_id")) if it.get("model_id") is not None else None
+                    per_item.setdefault(item_id, []).append(model_id)
+
+                for item_id, model_ids in per_item.items():
                     try:
-                        sample_item_id = int(items[0].get("item_id"))
-                        break
-                    except Exception:
-                        continue
-            _preflight = client.preflight_read_check(sample_item_id=sample_item_id)
-            st.info(
-                "Preflight OK (somente leitura). "
-                f"Item testado: {_preflight.get('sample_item_id')} | "
-                f"Campos de estoque detectados: {', '.join(_preflight.get('stock_fields_found') or []) or '(nenhum)'}"
-            )
-        except Exception as exc:  # noqa: BLE001
-            st.error(
-                "Não vou atualizar estoque porque o teste de requisição falhou. "
-                f"Detalhes: {exc}"
-            )
-            return
-
-        if st.session_state.get("api_env") == "Produção":
-            if not st.session_state.get("confirm_prod_update"):
-                st.error(
-                    "Para Produção, marque a confirmação antes de atualizar estoques."
-                )
-                return
-
-        total_success = 0
-        errors: List[Dict[str, Any]] = []
-
-        for g in groups:
-            group_id = g.get("group_id")
-            raw_value = st.session_state.get(f"new_stock_{group_id}", "").strip()
-            if raw_value == "":
-                # Usuário não quer atualizar este grupo
-                continue
-
-            try:
-                new_stock = int(raw_value)
-                if new_stock < 0:
-                    raise ValueError("Estoque não pode ser negativo")
-            except ValueError:
-                errors.append(
-                    {
-                        "group_id": group_id,
-                        "master_name": g.get("master_name"),
-                        "error": f"Valor de estoque inválido: '{raw_value}'",
-                    }
-                )
-                continue
-
-            # Agrupa models por item_id para reduzir chamadas
-            per_item: Dict[int, List[Optional[int]]] = {}
-            for it in g.get("items", []):
-                item_id = int(it.get("item_id"))
-                model_id = _norm_mid(it.get("model_id"))
-                per_item.setdefault(item_id, []).append(model_id)
-
-            for item_id, model_ids in per_item.items():
-                try:
-                    client.update_stock(item_id=item_id, model_ids=model_ids, new_stock=new_stock)
-                    total_success += len(model_ids) if any(m is not None for m in model_ids) else 1
-
-                    # Atualiza cache local para refletir o novo estoque imediatamente.
-                    if not model_ids or all(m is None for m in model_ids):
-                        # Estoque no nível do item (model_id=None)
-                        key = (int(item_id), None)
-                        stock_index[key] = int(new_stock)
-                        for pos in cache_positions.get(key, []):
-                            try:
-                                st.session_state["models_cache"][pos]["normal_stock"] = int(new_stock)
-                            except Exception:
-                                pass
-                    else:
+                        client.update_stock(item_id=item_id, model_ids=model_ids, new_stock=new_stock)
+                        
+                        # Atualiza cache local
                         for mid in model_ids:
-                            if mid is None:
-                                continue
-                            key = (int(item_id), int(mid))
-                            stock_index[key] = int(new_stock)
-                            for pos in cache_positions.get(key, []):
-                                try:
-                                    st.session_state["models_cache"][pos]["normal_stock"] = int(new_stock)
-                                except Exception:
-                                    pass
-                except Exception as exc:  # noqa: BLE001
-                    # Não interromper todo o processamento; apenas registrar o erro
-                    errors.append(
-                        {
-                            "group_id": group_id,
-                            "master_name": g.get("master_name"),
-                            "item_id": item_id,
-                            "model_ids": model_ids,
-                            "error": str(exc),
-                        }
-                    )
+                            key = (item_id, mid)
+                            # Atualiza stock_map local para refletir na UI se não der refresh
+                            stock_map[key] = new_stock
+                            # Tenta atualizar session state cache
+                            # (Lógica simplificada - ideal seria recarregar tudo, mas para UX rápida atualizamos local)
+                            for m in st.session_state["models_cache"]:
+                                m_mid = int(m.get("model_id")) if m.get("model_id") is not None else None
+                                if int(m.get("item_id")) == item_id and m_mid == mid:
+                                    m["normal_stock"] = new_stock
 
-        if total_success:
-            st.success(
-                f"Atualização de estoque concluída para aproximadamente {total_success} variações/anúncios."
-            )
-        else:
-            st.info("Nenhum estoque foi atualizado (nenhum valor informado ou todos inválidos).")
-
-        if errors:
-            st.error(
-                "Algumas atualizações falharam. Veja detalhes abaixo para correção manual ou nova tentativa."
-            )
-            st.json(errors)
-
-
-    if st.session_state.get("api_env") == "Produção":
-        st.checkbox(
-            "Confirmo que quero atualizar estoques na Shopee (Produção)",
-            key="confirm_prod_update",
-        )
+                        changes_count += 1
+                    except Exception as e:
+                        errors.append(f"{group['master_name']}: {e}")
+            
+            if errors:
+                status.update(label="Concluído com erros", state="error")
+                for e in errors: st.error(e)
+            else:
+                status.update(label="Atualização concluída!", state="complete")
+        
+        if changes_count > 0:
+            st.success(f"Sucesso! {changes_count} grupos atualizados.")
+            time.sleep(1)
+            st.rerun()
+        elif not errors:
+            st.info("Nenhuma alteração detectada na coluna 'Novo Estoque'.")
 
 
 def main():
-    st.set_page_config(page_title="IMS Shopee - Tecidos", layout="wide")
+    st.set_page_config(page_title="IMS Shopee - Tecidos", layout="wide", page_icon="📦")
+    
+    # CSS Customizado para visual "Clean"
+    st.markdown("""
+        <style>
+        .block-container { padding-top: 2rem; }
+        header { visibility: hidden; }
+        [data-testid="stSidebar"] { background-color: #f8f9fa; }
+        div[data-testid="stMetricValue"] { font-size: 1.8rem; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    init_session_state()
+    sidebar_setup()
+
+    # Navegação Lateral (Estilo Dashboard)
+    page = st.sidebar.radio("Navegação", ["📊 Visão Geral (Estoque)", "🧩 Mapeamento (Novos)"], index=0)
+
+    if "Visão Geral" in page:
+        view_dashboard()
+    else:
+        view_mapping()
+
+
+if __name__ == "__main__":
+    main()
     st.title("Sistema de Gestão de Estoque Unificado (IMS) - Shopee")
 
     st.markdown(
