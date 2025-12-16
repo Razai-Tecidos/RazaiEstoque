@@ -787,7 +787,8 @@ class ShopeeClient:
                     seller_stock_total = _sum_seller_stock_locations(seller_stock)
 
         # 3) Model list (possivelmente estoque)
-        models = self.get_model_list(int(sample_item_id))
+        model_data = self.get_model_list(int(sample_item_id))
+        models = model_data.get("model", [])
         first_model = models[0] if models else {}
         model_keys = sorted(list(first_model.keys())) if isinstance(first_model, dict) else []
 
@@ -889,17 +890,17 @@ class ShopeeClient:
 
         return results
 
-    def get_model_list(self, item_id: int) -> List[Dict[str, Any]]:
+    def get_model_list(self, item_id: int) -> Dict[str, Any]:
         """Retorna a lista de modelos (variações) para um item.
 
         Ver docs: Product > Get Model List (Shopee Open Platform v2).
+        Retorna o objeto 'response' completo, contendo 'model' e 'tier_variation'.
         """
         # Path completo incluindo "/api/v2" conforme docs de Get Model List
         path = "/api/v2/product/get_model_list"
         params = {"item_id": int(item_id)}
         data = self._make_request("GET", path, params=params)
-        models = data.get("response", {}).get("model", []) or []
-        return models
+        return data.get("response", {}) or {}
 
     def update_stock(
         self,
@@ -1147,7 +1148,18 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
         has_model = bool(has_model)
 
         if has_model:
-            models = client.get_model_list(item_id)
+            model_data = client.get_model_list(item_id)
+            models = model_data.get("model", [])
+            tier_variation = model_data.get("tier_variation", [])
+
+            # Tenta identificar qual tier é "Cor"
+            color_tier_idx = -1
+            for idx, tv in enumerate(tier_variation):
+                tv_name = str(tv.get("name", "")).strip().lower()
+                if tv_name in ("cor", "color", "colour", "colors", "colours"):
+                    color_tier_idx = idx
+                    break
+
             for m in models:
                 model_id = m.get("model_id")
                 model_name = m.get("model_name", "")
@@ -1159,7 +1171,22 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
                         pass
                 display_name = f"{item_name} - {model_name}" if model_name else item_name
 
-                color_key = extract_color_from_model(str(model_name or ""), item_name)
+                # 1) Tenta extrair cor via tier_variation (mais preciso)
+                color_key = ""
+                if color_tier_idx >= 0:
+                    t_indexes = m.get("tier_index")
+                    if isinstance(t_indexes, list) and len(t_indexes) > color_tier_idx:
+                        opt_idx = t_indexes[color_tier_idx]
+                        try:
+                            opts = tier_variation[color_tier_idx].get("option_list", [])
+                            if isinstance(opts, list) and len(opts) > opt_idx:
+                                color_key = str(opts[opt_idx].get("option", "")).strip()
+                        except Exception:
+                            pass
+
+                # 2) Fallback: regex no nome do modelo
+                if not color_key:
+                    color_key = extract_color_from_model(str(model_name or ""), item_name)
                 color_label = _titleize_words(color_key) if color_key else ""
                 short_display_name = (
                     f"{fabric_label} - {color_label}".strip(" -")
