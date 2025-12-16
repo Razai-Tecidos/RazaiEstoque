@@ -1562,10 +1562,15 @@ def extract_color_from_model(model_name: str, item_name: str = "") -> str:
             continue
         tokens.append(t2)
 
-    # Limita a 3 palavras conforme solicitado
-    tokens = tokens[:3]
+    # Limita a 6 palavras (aumentado para pegar cores compostas ex: "folhagem azul e branco")
+    tokens = tokens[:6]
 
     s = " ".join(tokens).strip()
+    
+    # Remove conectivos soltos no final
+    if s.endswith(" e"):
+        s = s[:-2].strip()
+        
     return s
 
 
