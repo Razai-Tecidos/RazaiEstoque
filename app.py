@@ -1745,93 +1745,31 @@ def init_session_state() -> None:
         st.session_state["redirect_url"] = "https://razaiestoque.streamlit.app/"
 
 
-def sidebar_setup() -> None:
-    st.sidebar.header("Configurações Shopee (Setup)")
-
-    # Pré-carrega credenciais (sem salvar em disco):
-    # 1) arquivo local somente leitura (sandbox/teste)
-    # 2) variáveis de ambiente (ideal para produção)
-    # 3) tokens persistidos via Git (tokens.json)
+def setup_auth_and_creds():
+    """Gerencia autenticação, carregamento de credenciais e OAuth (sem UI)."""
+    
+    # Carrega fontes de dados
     file_creds = load_test_credentials_from_file()
     secrets_creds = load_credentials_from_streamlit_secrets()
     env_creds = load_credentials_from_env()
     git_tokens = load_tokens()
 
-    # Se o app for aberto com query params (ex.: redirect do OAuth), auto-preenche.
-    # Funciona tanto no Streamlit Cloud (redirect para a própria URL do app)
-    # quanto localmente, se você abrir: http://localhost:8501/?code=...&shop_id=...
-    def _qp_first(value: Any) -> Optional[str]:
-        if value is None:
-            return None
-        if isinstance(value, list):
-            return str(value[0]) if value else None
-        return str(value)
-
-    try:
-        qp: Any = st.query_params  # Streamlit novo
-        qp_code = _qp_first(qp.get("code"))
-        qp_shop_id = _qp_first(qp.get("shop_id"))
-    except Exception:
-        qp = st.experimental_get_query_params()
-        qp_code = _qp_first(qp.get("code"))
-        qp_shop_id = _qp_first(qp.get("shop_id"))
-
-    # Importante: o `code` é uso único e expira rápido. Se o usuário reautorizar,
-    # ele chega com um NOVO code na URL. Então precisamos atualizar a sessão quando
-    # o query param mudar; caso contrário o app tenta trocar um code antigo e falha.
-    if qp_code and qp_code != str(st.session_state.get("oauth_code") or ""):
-        st.session_state["oauth_code"] = qp_code
-    if qp_shop_id and qp_shop_id != str(st.session_state.get("oauth_shop_id") or ""):
-        st.session_state["oauth_shop_id"] = qp_shop_id
-
-    # Se acabamos de atualizar tokens (OAuth/refresh), refletir nos inputs ANTES
-    # dos widgets serem instanciados.
-    if st.session_state.get("_sync_token_inputs"):
-        st.session_state["shop_id_input"] = str(st.session_state.get("shop_id") or "")
-        st.session_state["access_token_input"] = str(st.session_state.get("access_token") or "")
-        st.session_state["refresh_token_input"] = str(st.session_state.get("refresh_token") or "")
-        st.session_state["_sync_token_inputs"] = False
-
-    # Se veio shop_id no redirect, isso é Live e ajuda a preencher automaticamente.
-    if qp_shop_id and not file_creds.get("live_shop_id"):
-        file_creds["live_shop_id"] = qp_shop_id
-
-    preferred_env = st.session_state.get("api_env", "Produção")
-
-    # Ordem de prioridade para preencher campos:
-    # 1. Session State (se já editado)
-    # 2. Git Tokens (tokens.json)
-    # 3. Secrets (st.secrets)
-    # 4. Env Vars
-    # 5. File Creds (razaiestoque.txt)
-
+    # Helper para resolver prioridades
     def _resolve(key_session: str, key_git: str, key_secrets: str, key_env: str, key_file: str) -> str:
-        # Se já tem na sessão (e não está vazio), usa.
-        # Mas cuidado: na primeira execução, sessão pode estar vazia.
         val_sess = str(st.session_state.get(key_session) or "").strip()
-        if val_sess:
-            return val_sess
-        
-        # Git Tokens
+        if val_sess: return val_sess
         val_git = str(git_tokens.get(key_git) or "").strip()
-        if val_git:
-            return val_git
-
-        # Secrets
+        if val_git: return val_git
         val_sec = str(secrets_creds.get(key_secrets) or "").strip()
-        if val_sec:
-            return val_sec
-        
-        # Env
+        if val_sec: return val_sec
         val_env = str(env_creds.get(key_env) or "").strip()
-        if val_env:
-            return val_env
-        
-        # File
+        if val_env: return val_env
         val_file = str(file_creds.get(key_file) or "").strip()
         return val_file
 
-    # Resolve valores iniciais
+    # Determina ambiente
+    preferred_env = st.session_state.get("api_env", "Produção")
+    
     if preferred_env == "Produção":
         init_partner_id = _resolve("partner_id", "partner_id", "partner_id", "partner_id", "live_partner_id")
         init_partner_key = _resolve("partner_key", "partner_key", "partner_key", "partner_key", "live_partner_key")
@@ -1841,16 +1779,15 @@ def sidebar_setup() -> None:
         init_redirect_url = _resolve("redirect_url", "redirect_url", "redirect_url", "redirect_url", "")
         init_api_base_url = _resolve("api_base_url", "api_base_url", "api_base_url", "api_base_url", "")
     else:
-        # Sandbox
         init_partner_id = _resolve("partner_id", "test_partner_id", "test_partner_id", "test_partner_id", "test_partner_id")
         init_partner_key = _resolve("partner_key", "test_partner_key", "test_partner_key", "test_partner_key", "test_partner_key")
         init_shop_id = _resolve("shop_id", "test_shop_id", "test_shop_id", "test_shop_id", "test_shop_id")
         init_access_token = _resolve("access_token", "test_access_token", "test_access_token", "test_access_token", "test_access_token")
-        init_refresh_token = "" # Sandbox geralmente não usa refresh token complexo no exemplo
+        init_refresh_token = ""
         init_redirect_url = "https://razaiestoque.streamlit.app/"
         init_api_base_url = SANDBOX_BASE_URL
 
-    # Atualiza session state se estiver vazio
+    # Atualiza Session State
     if not st.session_state.get("partner_id"): st.session_state["partner_id"] = init_partner_id
     if not st.session_state.get("partner_key"): st.session_state["partner_key"] = init_partner_key
     if not st.session_state.get("shop_id"): st.session_state["shop_id"] = init_shop_id
@@ -1859,16 +1796,25 @@ def sidebar_setup() -> None:
     if not st.session_state.get("redirect_url"): st.session_state["redirect_url"] = init_redirect_url
     if not st.session_state.get("api_base_url"): st.session_state["api_base_url"] = init_api_base_url
 
-    # --- Lógica de Auto-Login (OAuth Code Exchange) ---
-    # Se detectamos code/shop_id na URL e ainda não trocamos:
-    if (
-        qp_code 
-        and qp_shop_id 
-        and qp_code != st.session_state.get("_last_oauth_code_exchanged")
-        and init_partner_id 
-        and init_partner_key
-    ):
-        st.sidebar.info("Detectado retorno do login Shopee. Trocando code por token...")
+    # --- OAuth Code Exchange ---
+    try:
+        # Compatibilidade com versões diferentes do Streamlit
+        if hasattr(st, "query_params"):
+            qp = st.query_params
+            qp_code = qp.get("code")
+            qp_shop_id = qp.get("shop_id")
+        else:
+            qp = st.experimental_get_query_params()
+            qp_code = qp.get("code", [None])[0]
+            qp_shop_id = qp.get("shop_id", [None])[0]
+    except:
+        qp_code = None
+        qp_shop_id = None
+
+    if (qp_code and qp_shop_id and 
+        qp_code != st.session_state.get("_last_oauth_code_exchanged") and 
+        init_partner_id and init_partner_key):
+        
         try:
             tmp_client = ShopeeClient(
                 partner_id=int(init_partner_id),
@@ -1883,17 +1829,16 @@ def sidebar_setup() -> None:
                 redirect_uri=init_redirect_url
             )
             
-            new_at = str(token_data.get("access_token", "")).strip()
-            new_rt = str(token_data.get("refresh_token", "")).strip()
+            new_at = token_data.get("access_token")
+            new_rt = token_data.get("refresh_token")
             
             if new_at:
                 st.session_state["access_token"] = new_at
                 st.session_state["refresh_token"] = new_rt
                 st.session_state["shop_id"] = qp_shop_id
                 st.session_state["_last_oauth_code_exchanged"] = qp_code
-                st.session_state["_sync_token_inputs"] = True
                 
-                # Salva no tokens.json e faz push
+                # Persistência
                 new_tokens = {
                     "partner_id": init_partner_id,
                     "partner_key": init_partner_key,
@@ -1904,172 +1849,41 @@ def sidebar_setup() -> None:
                     "api_base_url": init_api_base_url
                 }
                 save_tokens(new_tokens)
-                git_persist_data() # Salva no Git automaticamente
-                
-                st.sidebar.success("Login realizado com sucesso! Tokens salvos no Git.")
+                git_persist_data()
+                st.toast("Login realizado com sucesso!", icon="✅")
                 time.sleep(1)
                 st.rerun()
-        except Exception as exc:
-            st.sidebar.error(f"Erro no auto-login: {exc}")
+        except Exception as e:
+            st.error(f"Erro no login: {e}")
 
-    # --- UI Simplificada ---
-    
-    # Se temos token válido (ou refresh token), mostramos status conectado
-    has_token = bool(st.session_state.get("access_token"))
-    has_refresh = bool(st.session_state.get("refresh_token"))
-    
-    if has_token:
-        st.sidebar.success(f"Conectado (Shop ID: {st.session_state.get('shop_id')})")
-        if st.sidebar.button("Desconectar / Trocar Conta"):
-            st.session_state["access_token"] = ""
-            st.session_state["refresh_token"] = ""
-            st.session_state["shop_id"] = ""
-            # Limpa tokens.json
-            save_tokens({})
-            git_persist_data()
-            st.rerun()
-    else:
-        st.sidebar.warning("Desconectado")
-        # Botão grande de login
-        if init_partner_id and init_partner_key and init_redirect_url:
-            try:
-                tmp_client = ShopeeClient(
-                    partner_id=int(init_partner_id),
-                    partner_key=init_partner_key,
-                    shop_id=0,
-                    access_token="",
-                    base_url=init_api_base_url or BASE_URL,
-                )
-                auth_url = tmp_client.build_authorize_url(init_redirect_url)
-                st.sidebar.link_button("🔐 Fazer Login na Shopee", auth_url, type="primary")
-            except Exception:
-                st.sidebar.error("Erro ao gerar link de login. Verifique configurações.")
-
-    # Expander para configurações manuais (escondido por padrão se estiver tudo ok)
-    with st.sidebar.expander("Configurações Avançadas / Manuais", expanded=not (has_token or has_refresh)):
-        partner_id = st.text_input("Partner ID", value=st.session_state.get("partner_id", ""), key="partner_id_input")
-        partner_key = st.text_input("Partner Key", value=st.session_state.get("partner_key", ""), type="password", key="partner_key_input")
+    # --- Auto Refresh Token ---
+    if (preferred_env == "Produção" and 
+        not st.session_state.get("_auto_token_bootstrap_done") and 
+        not st.session_state.get("access_token") and 
+        st.session_state.get("refresh_token")):
         
-        # Atualiza session state quando user digita
-        if partner_id != st.session_state.get("partner_id"): st.session_state["partner_id"] = partner_id
-        if partner_key != st.session_state.get("partner_key"): st.session_state["partner_key"] = partner_key
-
-        shop_id_input = st.text_input(
-            "Shop ID",
-            value=st.session_state.get("shop_id_input", ""),
-            key="shop_id_widget",
-        )
-        access_token_input = st.text_input(
-            "Access Token",
-            value=st.session_state.get("access_token_input", ""),
-            type="password",
-            key="access_token_widget",
-        )
-        refresh_token_input = st.text_input(
-            "Refresh Token",
-            value=st.session_state.get("refresh_token_input", ""),
-            type="password",
-            key="refresh_token_widget",
-        )
-        
-        # Sincroniza widgets -> session
-        st.session_state["shop_id"] = shop_id_input
-        st.session_state["access_token"] = access_token_input
-        st.session_state["refresh_token"] = refresh_token_input
-
-        api_env = st.selectbox("Ambiente", ["Produção", "Sandbox"], index=0 if preferred_env == "Produção" else 1)
-        st.session_state["api_env"] = api_env
-        
-        # ... (resto das configs manuais se necessário) ...
-        
-        api_region = st.selectbox(
-            "Região (host de produção)",
-            options=["Brasil", "Global"],
-            key="api_region",
-            help=(
-                "A Shopee usa hosts diferentes por região. "
-                "Brasil usa openplatform.shopee.com.br; Global usa partner.shopeemobile.com."
-            ),
-            disabled=(api_env != "Produção"),
-        )
-
-        if api_env == "Sandbox":
-            default_host = SANDBOX_BASE_URL
-        else:
-            default_host = BASE_URL if api_region == "Brasil" else GLOBAL_BASE_URL
-
-        # Só sobrescreve automaticamente se o valor atual estiver nos padrões.
-        if st.session_state.get("api_base_url") in (
-            None,
-            "",
-            BASE_URL,
-            GLOBAL_BASE_URL,
-            SANDBOX_BASE_URL,
-        ):
-            st.session_state["api_base_url"] = default_host
-
-        api_base_url = st.text_input(
-            "API Base URL",
-            value=st.session_state.get("api_base_url", ""),
-            key="api_base_url_widget",
-        )
-        st.session_state["api_base_url"] = api_base_url
-        
-        redirect_url = st.text_input(
-            "Redirect URL",
-            value=st.session_state.get("redirect_url", ""),
-            key="redirect_url_widget",
-        )
-        st.session_state["redirect_url"] = redirect_url
-
-    # Mensagens "flash" (aparecem uma vez)
-    if str(st.session_state.get("_flash_sidebar") or "").strip():
-        st.sidebar.success(str(st.session_state.get("_flash_sidebar") or ""))
-        st.session_state["_flash_sidebar"] = ""
-
-    # --- Fim do Setup ---
-
-    # Auto-renovação: se houver refresh_token (Secrets/ENV/Git), evita ter que reautorizar.
-    # Só tenta se NÃO tiver access_token válido ainda.
-    if (
-        preferred_env == "Produção"
-        and not st.session_state.get("_auto_token_bootstrap_done")
-        and not str(st.session_state.get("access_token") or "").strip()
-        and str(st.session_state.get("refresh_token") or "").strip()
-        and str(st.session_state.get("partner_id") or "").strip()
-        and str(st.session_state.get("partner_key") or "").strip()
-        and str(st.session_state.get("shop_id") or "").strip()
-        and str(st.session_state.get("api_base_url") or "").strip()
-    ):
         try:
-            previous_rt = str(st.session_state.get("refresh_token") or "").strip()
+            rt = st.session_state["refresh_token"]
             tmp_client = ShopeeClient(
                 partner_id=int(st.session_state["partner_id"]),
-                partner_key=str(st.session_state["partner_key"]),
+                partner_key=st.session_state["partner_key"],
                 shop_id=0,
                 access_token="",
-                base_url=str(st.session_state["api_base_url"] or BASE_URL),
+                base_url=st.session_state["api_base_url"] or BASE_URL
             )
-            with st.spinner("Renovando sessão (refresh token)..."):
-                token_data = tmp_client.refresh_access_token(
-                    refresh_token=previous_rt,
-                    shop_id=int(str(st.session_state.get("shop_id") or "0").strip()),
-                )
+            token_data = tmp_client.refresh_access_token(rt, int(st.session_state["shop_id"] or 0))
             
-            new_at = str(token_data.get("access_token", "")).strip()
-            new_rt = str(token_data.get("refresh_token", "") or "").strip()
+            new_at = token_data.get("access_token")
+            new_rt = token_data.get("refresh_token")
             
             if new_at:
                 st.session_state["access_token"] = new_at
-                if new_rt:
-                    st.session_state["refresh_token"] = new_rt
+                if new_rt: st.session_state["refresh_token"] = new_rt
+                st.toast("Sessão restaurada!", icon="🔄")
                 
-                st.session_state["last_token_refresh_ts"] = int(time.time())
-                st.session_state["_flash_sidebar"] = "Sessão restaurada com sucesso!"
-                
-                # Se mudou o refresh token, salva no Git
-                if new_rt and new_rt != previous_rt:
-                    new_tokens = {
+                if new_rt and new_rt != rt:
+                    # Atualiza persistência se mudou RT
+                    save_tokens({
                         "partner_id": st.session_state["partner_id"],
                         "partner_key": st.session_state["partner_key"],
                         "shop_id": st.session_state["shop_id"],
@@ -2077,145 +1891,12 @@ def sidebar_setup() -> None:
                         "refresh_token": new_rt,
                         "redirect_url": st.session_state["redirect_url"],
                         "api_base_url": st.session_state["api_base_url"]
-                    }
-                    save_tokens(new_tokens)
+                    })
                     git_persist_data()
-                
-                st.rerun()
-        except Exception as exc:
-            # Se falhar, limpa para forçar login novo
-            if "error_param" in str(exc):
-                st.session_state["refresh_token"] = ""
-                st.warning("Sessão expirada. Faça login novamente.")
-            else:
-                st.warning(f"Falha ao restaurar sessão: {exc}")
+        except Exception:
+            st.session_state["refresh_token"] = "" # Limpa se inválido
         finally:
             st.session_state["_auto_token_bootstrap_done"] = True
-
-    st.sidebar.markdown("---")
-
-    st.sidebar.caption(
-        "As credenciais são salvas em tokens.json e persistidas no Git."
-    )
-
-    if st.sidebar.button("Sincronizar Dados da Shopee"):
-        # Recupera valores da sessão para garantir que temos o mais atual
-        partner_id = st.session_state.get("partner_id")
-        partner_key = st.session_state.get("partner_key")
-        shop_id = st.session_state.get("shop_id")
-        access_token = st.session_state.get("access_token")
-        api_base_url = st.session_state.get("api_base_url")
-
-        # 1. Tenta atualizar grupos do Git antes de tudo
-        with st.spinner("Verificando atualizações de grupos (Git)..."):
-            git_msg = git_pull_data()
-            if "Sucesso" in git_msg:
-                st.toast("Grupos atualizados do GitHub!", icon="✅")
-            elif "Erro" in git_msg:
-                # Apenas avisa, não bloqueia (pode ser ambiente sem git ou offline)
-                st.toast(f"Git Pull: {git_msg}", icon="⚠️")
-
-        if not (partner_id and partner_key and shop_id and access_token):
-            st.sidebar.error("Preencha todas as credenciais antes de sincronizar.")
-        else:
-            try:
-                client = ShopeeClient(
-                    partner_id=int(partner_id),
-                    partner_key=partner_key,
-                    shop_id=int(shop_id),
-                    access_token=access_token,
-                    base_url=api_base_url or BASE_URL,
-                )
-                with st.spinner("Sincronizando itens e variações da Shopee..."):
-                    models_cache = build_models_cache(client)
-
-                st.session_state["client"] = client
-                st.session_state["models_cache"] = models_cache
-                st.session_state["last_sync_ts"] = int(time.time())
-
-                # Re-sincroniza nomes dentro dos grupos salvos (se existirem)
-                try:
-                    existing_groups = load_groups()
-                    if existing_groups:
-                        refreshed, updated_count = refresh_group_names_from_models_cache(existing_groups, models_cache)
-                        if updated_count:
-                            save_groups(refreshed)
-                            st.sidebar.info(f"Nomes re-sincronizados em {updated_count} campos dentro dos grupos.")
-                except Exception as exc:  # noqa: BLE001
-                    st.sidebar.warning(f"Não foi possível re-sincronizar nomes dos grupos: {exc}")
-
-                st.sidebar.success(
-                    f"Sincronização concluída. Modelos carregados: {len(models_cache)}"
-                )
-            except Exception as exc:  # noqa: BLE001
-                st.sidebar.error(f"Erro ao sincronizar com a Shopee: {exc}")
-
-    # --- Git Backup ---
-    st.sidebar.markdown("---")
-    st.sidebar.header("Backup / Persistência")
-    
-    col_g1, col_g2 = st.sidebar.columns(2)
-    
-    if col_g1.button("Salvar no GitHub"):
-        with st.spinner("Enviando..."):
-            msg = git_persist_data()
-            if "Sucesso" in msg:
-                st.sidebar.success(msg)
-            elif "Nenhuma alteração" in msg:
-                st.sidebar.info(msg)
-            else:
-                st.sidebar.error(msg)
-
-    if col_g2.button("Baixar do GitHub"):
-        with st.spinner("Baixando..."):
-            msg = git_pull_data()
-            if "Sucesso" in msg:
-                st.sidebar.success(msg)
-                time.sleep(1)
-                st.rerun()
-            else:
-                st.sidebar.error(msg)
-
-    # --- Importar / Exportar mapeamentos (groups.json) ---
-    with st.sidebar.expander("Importar/Exportar mapeamentos (Grupos)"):
-        st.caption(
-            "Use isso como backup/restauração. No Streamlit Cloud, o armazenamento local pode não persistir; "
-            "com backend remoto configurado, isso também salva/carrega do remoto."
-        )
-
-        try:
-            current_groups = load_groups()
-        except Exception as exc:  # noqa: BLE001
-            current_groups = []
-            st.error(f"Falha ao carregar grupos atuais: {exc}")
-
-        export_payload = {"groups": current_groups}
-        export_bytes = json.dumps(export_payload, ensure_ascii=False, indent=2).encode("utf-8")
-
-        st.download_button(
-            "Baixar mapeamentos (groups.json)",
-            data=export_bytes,
-            file_name="groups.json",
-            mime="application/json",
-        )
-
-        uploaded = st.file_uploader(
-            "Carregar arquivo groups.json para restaurar", type=["json"], accept_multiple_files=False
-        )
-
-        if uploaded is not None:
-            try:
-                raw_text = uploaded.read().decode("utf-8")
-                imported_payload = json.loads(raw_text)
-                imported_groups = _validate_imported_groups_payload(imported_payload)
-                st.success(f"Arquivo lido. Grupos válidos encontrados: {len(imported_groups)}")
-
-                if st.button("Importar e SUBSTITUIR meus grupos"):
-                    save_groups(imported_groups)
-                    st.success("Importação concluída. Grupos atualizados.")
-                    st.rerun()
-            except Exception as exc:  # noqa: BLE001
-                st.error(f"Falha ao importar JSON: {exc}")
 
 
 def view_mapping():
@@ -2611,29 +2292,228 @@ def view_dashboard():
             st.info("Nenhuma alteração detectada na coluna 'Novo Estoque'.")
 
 
+def view_settings():
+    """View: Configurações e Conexão."""
+    st.header("Configurações e Conexão")
+    
+    # --- Status da Conexão ---
+    has_token = bool(st.session_state.get("access_token"))
+    
+    with st.container(border=True):
+        st.subheader("Status da Conexão")
+        if has_token:
+            st.success(f"✅ Conectado à Shopee (Shop ID: {st.session_state.get('shop_id')})")
+            if st.button("Desconectar / Trocar Conta", type="secondary"):
+                st.session_state["access_token"] = ""
+                st.session_state["refresh_token"] = ""
+                st.session_state["shop_id"] = ""
+                save_tokens({})
+                git_persist_data()
+                st.rerun()
+        else:
+            st.warning("⚠️ Desconectado")
+            
+            # Recupera URL de redirect da sessão ou usa padrão
+            redirect_url = st.session_state.get("redirect_url", "https://razaiestoque.streamlit.app/")
+            
+            # Tenta montar URL de auth se tiver credenciais básicas
+            partner_id = st.session_state.get("partner_id")
+            partner_key = st.session_state.get("partner_key")
+            api_base_url = st.session_state.get("api_base_url") or BASE_URL
+            
+            if partner_id and partner_key:
+                try:
+                    tmp_client = ShopeeClient(
+                        partner_id=int(partner_id),
+                        partner_key=partner_key,
+                        shop_id=0,
+                        access_token="",
+                        base_url=api_base_url,
+                    )
+                    auth_url = tmp_client.build_authorize_url(redirect_url)
+                    st.link_button("🔐 Fazer Login na Shopee", auth_url, type="primary")
+                except Exception as e:
+                    st.error(f"Erro ao gerar link: {e}")
+            else:
+                st.info("Configure as credenciais abaixo para habilitar o login.")
+
+    st.divider()
+
+    # --- Configurações Manuais ---
+    with st.expander("⚙️ Credenciais de API (Avançado)", expanded=not has_token):
+        c1, c2 = st.columns(2)
+        
+        partner_id = c1.text_input("Partner ID", value=st.session_state.get("partner_id", ""))
+        partner_key = c2.text_input("Partner Key", value=st.session_state.get("partner_key", ""), type="password")
+        
+        if partner_id != st.session_state.get("partner_id"): st.session_state["partner_id"] = partner_id
+        if partner_key != st.session_state.get("partner_key"): st.session_state["partner_key"] = partner_key
+
+        api_env = st.selectbox("Ambiente", ["Produção", "Sandbox"], index=0 if st.session_state.get("api_env") == "Produção" else 1)
+        st.session_state["api_env"] = api_env
+        
+        # Lógica de host
+        if api_env == "Sandbox":
+            default_host = SANDBOX_BASE_URL
+        else:
+            default_host = BASE_URL # Default BR
+            
+        current_host = st.session_state.get("api_base_url", default_host)
+        api_base_url = st.text_input("API Base URL", value=current_host)
+        st.session_state["api_base_url"] = api_base_url
+        
+        redirect_url_input = st.text_input("Redirect URL", value=st.session_state.get("redirect_url", ""))
+        st.session_state["redirect_url"] = redirect_url_input
+
+    # --- Backup ---
+    st.divider()
+    st.subheader("Backup e Persistência")
+    
+    c_git1, c_git2 = st.columns(2)
+    if c_git1.button("☁️ Salvar Dados no GitHub"):
+        with st.spinner("Salvando..."):
+            msg = git_persist_data()
+            if "Sucesso" in msg: st.success(msg)
+            else: st.warning(msg)
+            
+    if c_git2.button("⬇️ Baixar Dados do GitHub"):
+        with st.spinner("Baixando..."):
+            msg = git_pull_data()
+            if "Sucesso" in msg: 
+                st.success(msg)
+                time.sleep(1)
+                st.rerun()
+            else: st.warning(msg)
+
+    # --- Importar / Exportar JSON ---
+    st.divider()
+    with st.expander("📂 Importar/Exportar Arquivo Local (JSON)"):
+        st.caption("Backup manual dos grupos (groups.json).")
+        
+        try:
+            current_groups = load_groups()
+        except: current_groups = []
+        
+        export_payload = {"groups": current_groups}
+        export_bytes = json.dumps(export_payload, ensure_ascii=False, indent=2).encode("utf-8")
+        
+        c_ex, c_im = st.columns(2)
+        
+        c_ex.download_button(
+            "⬇️ Baixar groups.json",
+            data=export_bytes,
+            file_name="groups.json",
+            mime="application/json",
+            use_container_width=True
+        )
+        
+        uploaded = c_im.file_uploader("Restaurar groups.json", type=["json"])
+        if uploaded:
+            try:
+                raw = uploaded.read().decode("utf-8")
+                payload = json.loads(raw)
+                imported = _validate_imported_groups_payload(payload)
+                if st.button(f"⚠️ Substituir por {len(imported)} grupos do arquivo?", type="primary", use_container_width=True):
+                    save_groups(imported)
+                    st.success("Importado com sucesso!")
+                    time.sleep(1)
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Erro: {e}")
+
+
 def main():
     st.set_page_config(page_title="IMS Shopee - Tecidos", layout="wide", page_icon="📦")
     
-    # CSS Customizado para visual "Clean"
+    # CSS Customizado para visual "Clean" e Profissional
     st.markdown("""
         <style>
-        .block-container { padding-top: 2rem; }
+        /* Remove padding excessivo do topo */
+        .block-container { padding-top: 1.5rem; padding-bottom: 3rem; }
+        
+        /* Esconde header padrão e footer */
         header { visibility: hidden; }
-        [data-testid="stSidebar"] { background-color: #f8f9fa; }
-        div[data-testid="stMetricValue"] { font-size: 1.8rem; }
+        footer { visibility: hidden; }
+        
+        /* Sidebar mais limpa */
+        [data-testid="stSidebar"] { 
+            background-color: #f8f9fa; 
+            border-right: 1px solid #e9ecef;
+        }
+        
+        /* Cards de métricas mais bonitos */
+        div[data-testid="stMetric"] {
+            background-color: #ffffff;
+            border: 1px solid #e0e0e0;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        
+        /* Títulos mais sóbrios */
+        h1, h2, h3 { font-family: 'Inter', sans-serif; color: #333; }
+        
+        /* Botões primários com cor de destaque */
+        button[kind="primary"] {
+            background-color: #0d6efd;
+            border-color: #0d6efd;
+        }
         </style>
     """, unsafe_allow_html=True)
 
     init_session_state()
-    sidebar_setup()
+    setup_auth_and_creds()
+    
+    # Sidebar Minimalista (Apenas Navegação)
+    with st.sidebar:
+        st.title("📦 IMS Shopee")
+        st.caption("Gestão de Estoque Unificado")
+        st.markdown("---")
+        
+        page = st.radio(
+            "Menu", 
+            ["📊 Dashboard", "🧩 Mapeamento", "⚙️ Configurações"],
+            index=0,
+            label_visibility="collapsed"
+        )
+        
+        st.markdown("---")
+        
+        # Status Rápido na Sidebar
+        if st.session_state.get("access_token"):
+            st.success("● Online")
+        else:
+            st.error("● Offline")
+            
+        if st.button("🔄 Sincronizar Agora", use_container_width=True):
+             # Lógica de sync rápido (sem UI complexa)
+             partner_id = st.session_state.get("partner_id")
+             partner_key = st.session_state.get("partner_key")
+             shop_id = st.session_state.get("shop_id")
+             access_token = st.session_state.get("access_token")
+             api_base_url = st.session_state.get("api_base_url")
+             
+             if partner_id and access_token:
+                 try:
+                     client = ShopeeClient(int(partner_id), partner_key, int(shop_id), access_token, api_base_url or BASE_URL)
+                     with st.spinner("Sincronizando..."):
+                         cache = build_models_cache(client)
+                         st.session_state["client"] = client
+                         st.session_state["models_cache"] = cache
+                         st.session_state["last_sync_ts"] = int(time.time())
+                     st.toast("Sincronização concluída!", icon="✅")
+                 except Exception as e:
+                     st.toast(f"Erro: {e}", icon="❌")
+             else:
+                 st.toast("Conecte-se primeiro nas Configurações.", icon="⚠️")
 
-    # Navegação Lateral (Estilo Dashboard)
-    page = st.sidebar.radio("Navegação", ["📊 Visão Geral (Estoque)", "🧩 Mapeamento (Novos)"], index=0)
-
-    if "Visão Geral" in page:
+    # Roteamento de Páginas
+    if page == "📊 Dashboard":
         view_dashboard()
-    else:
+    elif page == "🧩 Mapeamento":
         view_mapping()
+    elif page == "⚙️ Configurações":
+        view_settings()
 
 
 if __name__ == "__main__":
