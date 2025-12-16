@@ -235,6 +235,20 @@ def git_persist_groups() -> str:
         return f"Erro inesperado ao salvar no Git: {exc}"
 
 
+def git_pull_groups() -> str:
+    """Atualiza o repositório local com as mudanças do remoto (git pull)."""
+    try:
+        # Tenta git pull. Se houver mudanças locais não commitadas em arquivos rastreados,
+        # o git pode abortar para evitar sobrescrita.
+        subprocess.run(["git", "pull"], check=True, capture_output=True)
+        return "Sucesso: Repositório atualizado do GitHub!"
+    except subprocess.CalledProcessError as e:
+        err_msg = e.stderr.decode() if e.stderr else str(e)
+        return f"Erro no Git Pull: {err_msg}"
+    except Exception as exc:
+        return f"Erro inesperado ao atualizar do Git: {exc}"
+
+
 def _validate_imported_groups_payload(payload: Any) -> List[Dict[str, Any]]:
     """Valida minimamente um payload de importação de grupos.
 
@@ -2182,13 +2196,26 @@ def sidebar_setup() -> None:
     # --- Git Backup ---
     st.sidebar.markdown("---")
     st.sidebar.header("Backup / Persistência")
-    if st.sidebar.button("Salvar Grupos no GitHub"):
-        with st.spinner("Salvando no Git..."):
+    
+    col_g1, col_g2 = st.sidebar.columns(2)
+    
+    if col_g1.button("Salvar no GitHub"):
+        with st.spinner("Enviando..."):
             msg = git_persist_groups()
             if "Sucesso" in msg:
                 st.sidebar.success(msg)
             elif "Nenhuma alteração" in msg:
                 st.sidebar.info(msg)
+            else:
+                st.sidebar.error(msg)
+
+    if col_g2.button("Baixar do GitHub"):
+        with st.spinner("Baixando..."):
+            msg = git_pull_groups()
+            if "Sucesso" in msg:
+                st.sidebar.success(msg)
+                time.sleep(1)
+                st.rerun()
             else:
                 st.sidebar.error(msg)
 
