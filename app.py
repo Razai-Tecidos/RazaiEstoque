@@ -7,6 +7,7 @@ import hashlib
 import urllib.parse
 import unicodedata
 import re
+import subprocess
 from typing import Dict, Any, List, Optional, Tuple
 
 import requests
@@ -203,6 +204,35 @@ def save_groups(groups: List[Dict[str, Any]]) -> None:
     payload = {"groups": groups}
     with open(GROUPS_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def git_persist_groups() -> str:
+    """Salva groups.json no repositório Git local (commit + push)."""
+    if not os.path.exists(GROUPS_FILE):
+        return "Arquivo groups.json não encontrado."
+
+    try:
+        # 1. Add
+        subprocess.run(["git", "add", GROUPS_FILE], check=True, capture_output=True)
+        
+        # 2. Check status
+        status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
+        if GROUPS_FILE not in status.stdout:
+            return "Nenhuma alteração pendente em groups.json."
+
+        # 3. Commit
+        subprocess.run(["git", "commit", "-m", "Update groups.json via App"], check=True, capture_output=True)
+        
+        # 4. Push
+        subprocess.run(["git", "push"], check=True, capture_output=True)
+        
+        return "Sucesso: groups.json salvo e enviado ao Git!"
+    except subprocess.CalledProcessError as e:
+        # Tenta capturar stderr
+        err_msg = e.stderr.decode() if e.stderr else str(e)
+        return f"Erro no Git: {err_msg}"
+    except Exception as exc:
+        return f"Erro inesperado ao salvar no Git: {exc}"
 
 
 def _validate_imported_groups_payload(payload: Any) -> List[Dict[str, Any]]:
@@ -2148,6 +2178,19 @@ def sidebar_setup() -> None:
                 )
             except Exception as exc:  # noqa: BLE001
                 st.sidebar.error(f"Erro ao sincronizar com a Shopee: {exc}")
+
+    # --- Git Backup ---
+    st.sidebar.markdown("---")
+    st.sidebar.header("Backup / Persistência")
+    if st.sidebar.button("Salvar Grupos no GitHub"):
+        with st.spinner("Salvando no Git..."):
+            msg = git_persist_groups()
+            if "Sucesso" in msg:
+                st.sidebar.success(msg)
+            elif "Nenhuma alteração" in msg:
+                st.sidebar.info(msg)
+            else:
+                st.sidebar.error(msg)
 
     # --- Importar / Exportar mapeamentos (groups.json) ---
     with st.sidebar.expander("Importar/Exportar mapeamentos (Grupos)"):
