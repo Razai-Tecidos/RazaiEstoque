@@ -2279,6 +2279,38 @@ def tab_mapping():
                     "Revise antes de salvar o grupo."
                 )
 
+    with st.expander("Ver itens ignorados nas sugestões (Diagnóstico)"):
+        st.caption("Lista de itens que não entraram nas sugestões automáticas e o motivo.")
+
+        # Re-executa lógica similar para diagnosticar
+        diagnosis_data = []
+        temp_buckets: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+
+        for m in ungrouped_models:
+            fabric_key = extract_fabric_from_title(str(m.get("item_name") or ""))
+            if not fabric_key:
+                diagnosis_data.append({
+                    "Item": m.get("display_name"),
+                    "Motivo": "Tecido não identificado (título fora do padrão?)"
+                })
+                continue
+
+            color_key = extract_color_from_model(str(m.get("model_name") or ""), str(m.get("item_name") or ""))
+            temp_buckets.setdefault((fabric_key, color_key), []).append(m)
+
+        for (fk, ck), items in temp_buckets.items():
+            if len(items) < 2:
+                for m in items:
+                    diagnosis_data.append({
+                        "Item": m.get("display_name"),
+                        "Motivo": f"Grupo isolado (único item com Tecido='{fk}' e Cor='{ck}')"
+                    })
+
+        if diagnosis_data:
+            st.dataframe(pd.DataFrame(diagnosis_data), use_container_width=True)
+        else:
+            st.info("Todos os itens não agrupados geraram alguma sugestão.")
+
     query = st.text_input("Buscar por título/variação (ex: 'Viscose'):", key="mapping_query")
 
     if st.session_state.get("mapping_suggestion_active") and st.session_state.get("mapping_suggestion_keys"):
