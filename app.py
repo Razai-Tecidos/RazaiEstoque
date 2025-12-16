@@ -1376,9 +1376,12 @@ def extract_fabric_from_title(title: str) -> str:
 def extract_color_from_model(model_name: str, item_name: str = "") -> str:
     """Extrai a cor (ou rótulo principal) do nome da variação.
 
-    Em geral, os models da Shopee aqui representam cores; mas às vezes podem
-    vir combinados com metragem. Fazemos melhor esforço para remover medidas.
-    Retorna texto normalizado (sem acento, lower).
+    Regras ajustadas:
+    1. Normaliza texto.
+    2. Corta tudo após ',' ou '('.
+    3. Corta tudo após ' x ' (ou ' x' no final).
+    4. Remove medidas/junk words.
+    5. Mantém no máximo as 3 primeiras palavras.
     """
     raw = str(model_name or "").strip()
     if not raw:
@@ -1388,28 +1391,28 @@ def extract_color_from_model(model_name: str, item_name: str = "") -> str:
 
     s = _norm_text(raw)
 
-    # Remove padrões de metragem mesmo quando grudados via vírgula/espaco.
-    # Exemplos comuns: "0,50m", "2m", "vermelho,2m", "azul 3m".
-    s = re.sub(r"[, ]?\b\d+(?:[.,]\d+)?m\b", "", s).strip()
+    # Regras de corte solicitadas
+    if "," in s:
+        s = s.split(",", 1)[0]
+    if "(" in s:
+        s = s.split("(", 1)[0]
+    
+    # Remove ' x ' ou ' x' no final (evita cortar 'roxo', 'maxi')
+    s = re.sub(r"\s+x(?:\s+|$).*", "", s)
 
-    # Se vier algo como "Branco Neve | 1m" ou "Azul - 2m", tentamos pegar a parte "mais textual".
+    # Remove padrões de metragem explícitos (ex: 2m, 0.50m)
+    s = re.sub(r"\b\d+(?:[.,]\d+)?m\b", "", s).strip()
+
+    # Remove separadores restantes que podem ter sobrado (ex: "Azul -")
     for sep in ("|", "/", "-", "–"):
-        if sep in s:
-            parts = [p.strip() for p in s.split(sep) if p.strip()]
-            if parts:
-                # Preferir o primeiro pedaço com letras
-                for p in parts:
-                    if any(ch.isalpha() for ch in p):
-                        s = p
-                        break
+        s = s.replace(sep, " ")
 
-    # Remove palavras que aparecem junto de tamanho/combos e não são parte da cor
-    junk_words = {"por", "metro", "metros", "m", "kit"}
+    junk_words = {"por", "metro", "metros", "m", "kit", "unidade", "unid"}
 
     tokens = []
     for t in s.split():
         tt = t.replace(".", ",")
-        # remove medidas
+        # remove medidas numéricas soltas ou com 'm'
         if tt.endswith("m"):
             num = tt[:-1]
             if num.replace(",", "").isdigit():
@@ -1418,12 +1421,15 @@ def extract_color_from_model(model_name: str, item_name: str = "") -> str:
             continue
         if tt in junk_words:
             continue
-
-        # Remove casos ainda grudados (ex.: "vermelho,2m")
+        
+        # Remove casos grudados restantes
         t2 = re.sub(r"\b\d+(?:[.,]\d+)?m\b", "", tt).strip(" ,")
         if not t2:
             continue
         tokens.append(t2)
+
+    # Limita a 3 palavras conforme solicitado
+    tokens = tokens[:3]
 
     s = " ".join(tokens).strip()
     return s
