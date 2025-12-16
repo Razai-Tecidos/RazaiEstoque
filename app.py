@@ -212,8 +212,8 @@ def git_persist_groups() -> str:
         return "Arquivo groups.json não encontrado."
 
     try:
-        # 1. Add
-        subprocess.run(["git", "add", GROUPS_FILE], check=True, capture_output=True)
+        # 1. Add (force para garantir que entre mesmo se estiver no .gitignore)
+        subprocess.run(["git", "add", "-f", GROUPS_FILE], check=True, capture_output=True)
         
         # 2. Check status
         status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
