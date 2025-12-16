@@ -1098,21 +1098,26 @@ class ShopeeClient:
     ) -> Dict[str, Any]:
         """Atualiza estoque de um item/model(s) usando /api/v2/product/update_stock.
 
-        - Se model_ids for None ou contiver apenas None, aplica estoque no nível do item.
-        - Caso contrário, envia stock_list para cada model_id.
+        Conforme docs v2:
+        - API sempre usa stock_list com seller_stock
+        - Para itens sem variações, usa model_id = 0
+        - seller_stock é array de objetos com stock (location_id opcional se loja não tem warehouse)
 
         Observação (docs v2): esta API atualiza o **seller_stock**.
         """
-        # Path completo incluindo "/api/v2" conforme docs de Update Stock
         path = "/api/v2/product/update_stock"
         body: Dict[str, Any] = {"item_id": int(item_id)}
 
-        # Sem variações (estoque no nível do item)
+        # Sem variações (estoque no nível do item): usa model_id = 0
         if not model_ids or all(m is None for m in model_ids):
-            body["stock"] = new_stock
+            stock_list = [
+                {
+                    "model_id": 0,
+                    "seller_stock": [{"stock": int(new_stock)}]
+                }
+            ]
         else:
-            # Para variações, stock_list exige seller_stock como LISTA de objetos.
-            # Erro anterior: json: cannot unmarshal number into Go struct field ... type []*StockByLocation
+            # Para variações, stock_list para cada model_id
             stock_list = [
                 {
                     "model_id": int(mid),
@@ -1121,9 +1126,18 @@ class ShopeeClient:
                 for mid in model_ids
                 if mid is not None
             ]
-            body["stock_list"] = stock_list
+        
+        body["stock_list"] = stock_list
 
         data = self._make_request("POST", path, body=body)
+        
+        # Verifica se houve falhas na resposta
+        response = data.get("response", {})
+        failure_list = response.get("failure_list", [])
+        if failure_list:
+            reasons = [f"model {f.get('model_id')}: {f.get('failed_reason')}" for f in failure_list]
+            raise RuntimeError(f"Falha ao atualizar estoque: {', '.join(reasons)}")
+        
         return data
 
 
