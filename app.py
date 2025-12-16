@@ -738,10 +738,53 @@ class ShopeeClient:
             except Exception:
                 raise RuntimeError("Preflight: item_id inválido no get_item_list")
 
+        def _to_int_or_none(v: Any) -> Optional[int]:
+            if v is None:
+                return None
+            try:
+                return int(v)
+            except Exception:
+                try:
+                    return int(float(v))
+                except Exception:
+                    return None
+
+        def _sum_seller_stock_locations(v: Any) -> Optional[int]:
+            """Soma seller_stock/shopee_stock quando vem como lista por location.
+
+            Cada entry costuma ter: {location_id, stock, if_saleable?}
+            """
+            if not isinstance(v, list):
+                return None
+            total = 0
+            found = False
+            for row in v:
+                if not isinstance(row, dict):
+                    continue
+                if row.get("if_saleable") is False:
+                    continue
+                stock_val = _to_int_or_none(row.get("stock"))
+                if stock_val is None:
+                    continue
+                total += stock_val
+                found = True
+            return total if found else None
+
         # 2) Base info (título + possivelmente estoque)
         base_list = self.get_item_base_info([int(sample_item_id)])
         bi = base_list[0] if base_list else {}
         bi_keys = sorted(list(bi.keys())) if isinstance(bi, dict) else []
+
+        # Caminho correto (docs): response > stock_info_v2 > seller_stock[] > stock
+        seller_stock_total: Optional[int] = None
+        seller_stock_count: Optional[int] = None
+        if isinstance(bi, dict):
+            stock_info_v2 = bi.get("stock_info_v2")
+            if isinstance(stock_info_v2, dict):
+                seller_stock = stock_info_v2.get("seller_stock")
+                if isinstance(seller_stock, list):
+                    seller_stock_count = len(seller_stock)
+                    seller_stock_total = _sum_seller_stock_locations(seller_stock)
 
         # 3) Model list (possivelmente estoque)
         models = self.get_model_list(int(sample_item_id))
@@ -769,11 +812,19 @@ class ShopeeClient:
                 if k in obj:
                     stock_fields_found.append(f"{prefix}.{k}")
 
+            # Detecção explícita do caminho esperado: stock_info_v2.seller_stock[].stock
+            if isinstance(obj.get("stock_info_v2"), dict):
+                siv2 = obj.get("stock_info_v2")
+                if isinstance(siv2, dict) and "seller_stock" in siv2:
+                    stock_fields_found.append(f"{prefix}.stock_info_v2.seller_stock")
+
         return {
             "sample_item_id": int(sample_item_id),
             "item_base_info_keys": bi_keys,
             "model_keys": model_keys,
             "stock_fields_found": stock_fields_found,
+            "base_stock_info_v2_seller_stock_count": seller_stock_count,
+            "base_stock_info_v2_seller_stock_total": seller_stock_total,
             "model_count": len(models) if isinstance(models, list) else None,
         }
 
@@ -919,6 +970,62 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
             continue
         base_by_id[iid] = bi
 
+    def _to_int_or_none(v: Any) -> Optional[int]:
+        if v is None:
+            return None
+        try:
+            # Algumas respostas podem trazer como string
+            return int(v)
+        except Exception:
+            try:
+                return int(float(v))
+            except Exception:
+                return None
+
+    def _sum_location_stock(v: Any) -> Optional[int]:
+        """Soma estoque quando Shopee retorna listas por location.
+
+        Formato típico (docs):
+          seller_stock: [{location_id: str, stock: int, if_saleable: bool?}, ...]
+          shopee_stock: [{location_id: str, stock: int}, ...]
+
+        Regra: soma `stock` de entradas `if_saleable=True` quando presente.
+        """
+        if not isinstance(v, list):
+            return None
+        total = 0
+        found = False
+        for row in v:
+            if not isinstance(row, dict):
+                continue
+            if row.get("if_saleable") is False:
+                continue
+            stock_val = _to_int_or_none(row.get("stock"))
+            if stock_val is None:
+                continue
+            total += stock_val
+            found = True
+        return total if found else None
+
+    def _stock_value_from_any(v: Any) -> Optional[int]:
+        iv = _to_int_or_none(v)
+        if iv is not None:
+            return iv
+        summed = _sum_location_stock(v)
+        if summed is not None:
+            return summed
+        # Alguns payloads podem trazer dict com chaves internas
+        if isinstance(v, dict):
+            for kk in ("seller_stock", "normal_stock", "stock", "shopee_stock"):
+                if kk in v:
+                    iv2 = _to_int_or_none(v.get(kk))
+                    if iv2 is not None:
+                        return iv2
+                    summed2 = _sum_location_stock(v.get(kk))
+                    if summed2 is not None:
+                        return summed2
+        return None
+
     def _extract_stock_from_base_info(bi: Dict[str, Any]) -> Tuple[Optional[int], Dict[int, Optional[int]]]:
         """Tenta extrair estoque do item e por model_id a partir do get_item_base_info.
 
@@ -928,53 +1035,23 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
         item_stock: Optional[int] = None
         model_stock: Dict[int, Optional[int]] = {}
 
-        def _sum_location_stock(v: Any) -> Optional[int]:
-            """Soma estoque quando Shopee retorna listas por location.
-
-            Formato típico (docs):
-              seller_stock: [{location_id: str, stock: int, if_saleable: bool?}, ...]
-              shopee_stock: [{location_id: str, stock: int}, ...]
-
-            Regra: soma `stock` de entradas `if_saleable=True` quando presente.
-            """
-            if not isinstance(v, list):
-                return None
-            total = 0
-            found = False
-            for row in v:
-                if not isinstance(row, dict):
-                    continue
-                if row.get("if_saleable") is False:
-                    continue
-                stock_val = _to_int_or_none(row.get("stock"))
-                if stock_val is None:
-                    continue
-                total += stock_val
-                found = True
-            return total if found else None
-
-        def _stock_value_from_any(v: Any) -> Optional[int]:
-            iv = _to_int_or_none(v)
-            if iv is not None:
-                return iv
-            summed = _sum_location_stock(v)
-            if summed is not None:
-                return summed
-            # Alguns payloads podem trazer dict com chaves internas
-            if isinstance(v, dict):
-                for kk in ("seller_stock", "normal_stock", "stock", "shopee_stock"):
-                    if kk in v:
-                        iv2 = _to_int_or_none(v.get(kk))
-                        if iv2 is not None:
-                            return iv2
-                        summed2 = _sum_location_stock(v.get(kk))
-                        if summed2 is not None:
-                            return summed2
-            return None
-
+        # 1) Tenta extrair estoque do item (nível superior)
         for k in ("stock", "normal_stock", "seller_stock", "shopee_stock"):
             if k in bi:
                 item_stock = _stock_value_from_any(bi.get(k))
+                if item_stock is not None:
+                    break
+        
+        # 2) Se não achou, tenta em estruturas aninhadas (ex: stock_info_v2)
+        if item_stock is None:
+            for nk in ("stock_info", "stock_info_v2", "inventory", "item_stock_info"):
+                nv = bi.get(nk)
+                if isinstance(nv, dict):
+                    for k in ("stock", "normal_stock", "seller_stock", "shopee_stock"):
+                        val = _stock_value_from_any(nv.get(k))
+                        if val is not None:
+                            item_stock = val
+                            break
                 if item_stock is not None:
                     break
 
@@ -1028,23 +1105,11 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
                 return str(v)
         return ""
 
-    def _to_int_or_none(v: Any) -> Optional[int]:
-        if v is None:
-            return None
-        try:
-            # Algumas respostas podem trazer como string
-            return int(v)
-        except Exception:
-            try:
-                return int(float(v))
-            except Exception:
-                return None
-
     def _extract_model_stock(model: Dict[str, Any]) -> Optional[int]:
         # Campos mais comuns
         for k in ("normal_stock", "stock", "seller_stock"):
             if k in model:
-                iv = _to_int_or_none(model.get(k))
+                iv = _stock_value_from_any(model.get(k))
                 if iv is not None:
                     return iv
 
@@ -1053,7 +1118,7 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
             nested = model.get(k)
             if isinstance(nested, dict):
                 for kk in ("normal_stock", "stock", "seller_stock"):
-                    iv = _to_int_or_none(nested.get(kk))
+                    iv = _stock_value_from_any(nested.get(kk))
                     if iv is not None:
                         return iv
         return None
