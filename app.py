@@ -35,6 +35,7 @@ BASE_URL = "https://openplatform.shopee.com.br"
 GLOBAL_BASE_URL = "https://partner.shopeemobile.com"
 SANDBOX_BASE_URL = "https://openplatform.sandbox.test-stable.shopee.sg"
 GROUPS_FILE = "groups.json"
+TOKENS_FILE = "tokens.json"
 CREDS_FILE = "razaiestoque.txt"
 
 
@@ -206,40 +207,61 @@ def save_groups(groups: List[Dict[str, Any]]) -> None:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
-def git_persist_groups() -> str:
-    """Salva groups.json no repositório Git local (commit + push)."""
-    if not os.path.exists(GROUPS_FILE):
-        return "Arquivo groups.json não encontrado."
+def load_tokens() -> Dict[str, Any]:
+    """Carrega tokens persistidos (tokens.json)."""
+    if not os.path.exists(TOKENS_FILE):
+        return {}
+    try:
+        with open(TOKENS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_tokens(tokens: Dict[str, Any]) -> None:
+    """Salva tokens em tokens.json."""
+    with open(TOKENS_FILE, "w", encoding="utf-8") as f:
+        json.dump(tokens, f, ensure_ascii=False, indent=2)
+
+
+def git_persist_data() -> str:
+    """Salva groups.json e tokens.json no repositório Git local (commit + push)."""
+    files_to_add = []
+    if os.path.exists(GROUPS_FILE):
+        files_to_add.append(GROUPS_FILE)
+    if os.path.exists(TOKENS_FILE):
+        files_to_add.append(TOKENS_FILE)
+
+    if not files_to_add:
+        return "Nenhum arquivo de dados encontrado para salvar."
 
     try:
-        # 1. Add (force para garantir que entre mesmo se estiver no .gitignore)
-        subprocess.run(["git", "add", "-f", GROUPS_FILE], check=True, capture_output=True)
+        # 1. Add (force para garantir)
+        cmd = ["git", "add", "-f"] + files_to_add
+        subprocess.run(cmd, check=True, capture_output=True)
         
         # 2. Check status
         status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
-        if GROUPS_FILE not in status.stdout:
-            return "Nenhuma alteração pendente em groups.json."
+        if not status.stdout.strip():
+            return "Nenhuma alteração pendente nos dados."
 
         # 3. Commit
-        subprocess.run(["git", "commit", "-m", "Update groups.json via App"], check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Update data (groups/tokens) via App"], check=True, capture_output=True)
         
         # 4. Push
         subprocess.run(["git", "push"], check=True, capture_output=True)
         
-        return "Sucesso: groups.json salvo e enviado ao Git!"
+        return "Sucesso: Dados salvos e enviados ao Git!"
     except subprocess.CalledProcessError as e:
-        # Tenta capturar stderr
         err_msg = e.stderr.decode() if e.stderr else str(e)
         return f"Erro no Git: {err_msg}"
     except Exception as exc:
         return f"Erro inesperado ao salvar no Git: {exc}"
 
 
-def git_pull_groups() -> str:
+def git_pull_data() -> str:
     """Atualiza o repositório local com as mudanças do remoto (git pull)."""
     try:
-        # Tenta git pull. Se houver mudanças locais não commitadas em arquivos rastreados,
-        # o git pode abortar para evitar sobrescrita.
         subprocess.run(["git", "pull"], check=True, capture_output=True)
         return "Sucesso: Repositório atualizado do GitHub!"
     except subprocess.CalledProcessError as e:
@@ -247,6 +269,9 @@ def git_pull_groups() -> str:
         return f"Erro no Git Pull: {err_msg}"
     except Exception as exc:
         return f"Erro inesperado ao atualizar do Git: {exc}"
+
+
+def _validate_imported_groups_payload(payload: Any) -> List[Dict[str, Any]]:
 
 
 def _validate_imported_groups_payload(payload: Any) -> List[Dict[str, Any]]:
@@ -1704,9 +1729,11 @@ def sidebar_setup() -> None:
     # Pré-carrega credenciais (sem salvar em disco):
     # 1) arquivo local somente leitura (sandbox/teste)
     # 2) variáveis de ambiente (ideal para produção)
+    # 3) tokens persistidos via Git (tokens.json)
     file_creds = load_test_credentials_from_file()
     secrets_creds = load_credentials_from_streamlit_secrets()
     env_creds = load_credentials_from_env()
+    git_tokens = load_tokens()
 
     # Se o app for aberto com query params (ex.: redirect do OAuth), auto-preenche.
     # Funciona tanto no Streamlit Cloud (redirect para a própria URL do app)
@@ -1748,145 +1775,191 @@ def sidebar_setup() -> None:
         file_creds["live_shop_id"] = qp_shop_id
 
     preferred_env = st.session_state.get("api_env", "Produção")
-    if preferred_env == "Sandbox":
-        preferred_partner_id = file_creds.get("test_partner_id")
-        preferred_partner_key = file_creds.get("test_partner_key")
-        preferred_shop_id = file_creds.get("test_shop_id")
-        preferred_access_token = file_creds.get("test_access_token")
+
+    # Ordem de prioridade para preencher campos:
+    # 1. Session State (se já editado)
+    # 2. Git Tokens (tokens.json)
+    # 3. Secrets (st.secrets)
+    # 4. Env Vars
+    # 5. File Creds (razaiestoque.txt)
+
+    def _resolve(key_session: str, key_git: str, key_secrets: str, key_env: str, key_file: str) -> str:
+        # Se já tem na sessão (e não está vazio), usa.
+        # Mas cuidado: na primeira execução, sessão pode estar vazia.
+        val_sess = str(st.session_state.get(key_session) or "").strip()
+        if val_sess:
+            return val_sess
+        
+        # Git Tokens
+        val_git = str(git_tokens.get(key_git) or "").strip()
+        if val_git:
+            return val_git
+
+        # Secrets
+        val_sec = str(secrets_creds.get(key_secrets) or "").strip()
+        if val_sec:
+            return val_sec
+        
+        # Env
+        val_env = str(env_creds.get(key_env) or "").strip()
+        if val_env:
+            return val_env
+        
+        # File
+        val_file = str(file_creds.get(key_file) or "").strip()
+        return val_file
+
+    # Resolve valores iniciais
+    if preferred_env == "Produção":
+        init_partner_id = _resolve("partner_id", "partner_id", "partner_id", "partner_id", "live_partner_id")
+        init_partner_key = _resolve("partner_key", "partner_key", "partner_key", "partner_key", "live_partner_key")
+        init_shop_id = _resolve("shop_id", "shop_id", "shop_id", "shop_id", "live_shop_id")
+        init_access_token = _resolve("access_token", "access_token", "access_token", "access_token", "")
+        init_refresh_token = _resolve("refresh_token", "refresh_token", "refresh_token", "refresh_token", "")
+        init_redirect_url = _resolve("redirect_url", "redirect_url", "redirect_url", "redirect_url", "")
+        init_api_base_url = _resolve("api_base_url", "api_base_url", "api_base_url", "api_base_url", "")
     else:
-        preferred_partner_id = file_creds.get("live_partner_id")
-        preferred_partner_key = file_creds.get("live_partner_key")
-        preferred_shop_id = file_creds.get("live_shop_id")
-        preferred_access_token = None
+        # Sandbox
+        init_partner_id = _resolve("partner_id", "test_partner_id", "test_partner_id", "test_partner_id", "test_partner_id")
+        init_partner_key = _resolve("partner_key", "test_partner_key", "test_partner_key", "test_partner_key", "test_partner_key")
+        init_shop_id = _resolve("shop_id", "test_shop_id", "test_shop_id", "test_shop_id", "test_shop_id")
+        init_access_token = _resolve("access_token", "test_access_token", "test_access_token", "test_access_token", "test_access_token")
+        init_refresh_token = "" # Sandbox geralmente não usa refresh token complexo no exemplo
+        init_redirect_url = "https://razaiestoque.streamlit.app/"
+        init_api_base_url = SANDBOX_BASE_URL
 
-    # Preenche automaticamente com base no ambiente atual.
-    # Por padrão, preferimos LIVE em Produção e também substituímos valores de Sandbox
-    # quando detectados (ex.: partner_id/shop_id de teste).
-    current_partner_id = str(st.session_state.get("partner_id") or "").strip()
-    current_partner_key = str(st.session_state.get("partner_key") or "").strip()
-    current_shop_id = str(st.session_state.get("shop_id") or "").strip()
-    current_access_token = str(st.session_state.get("access_token") or "").strip()
+    # Atualiza session state se estiver vazio
+    if not st.session_state.get("partner_id"): st.session_state["partner_id"] = init_partner_id
+    if not st.session_state.get("partner_key"): st.session_state["partner_key"] = init_partner_key
+    if not st.session_state.get("shop_id"): st.session_state["shop_id"] = init_shop_id
+    if not st.session_state.get("access_token"): st.session_state["access_token"] = init_access_token
+    if not st.session_state.get("refresh_token"): st.session_state["refresh_token"] = init_refresh_token
+    if not st.session_state.get("redirect_url"): st.session_state["redirect_url"] = init_redirect_url
+    if not st.session_state.get("api_base_url"): st.session_state["api_base_url"] = init_api_base_url
 
-    test_partner_id = str(file_creds.get("test_partner_id") or "").strip()
-    test_partner_key = str(file_creds.get("test_partner_key") or "").strip()
-    test_shop_id = str(file_creds.get("test_shop_id") or "").strip()
-    test_access_token = str(file_creds.get("test_access_token") or "").strip()
+    # --- Lógica de Auto-Login (OAuth Code Exchange) ---
+    # Se detectamos code/shop_id na URL e ainda não trocamos:
+    if (
+        qp_code 
+        and qp_shop_id 
+        and qp_code != st.session_state.get("_last_oauth_code_exchanged")
+        and init_partner_id 
+        and init_partner_key
+    ):
+        st.sidebar.info("Detectado retorno do login Shopee. Trocando code por token...")
+        try:
+            tmp_client = ShopeeClient(
+                partner_id=int(init_partner_id),
+                partner_key=init_partner_key,
+                shop_id=int(qp_shop_id),
+                access_token="",
+                base_url=init_api_base_url or BASE_URL,
+            )
+            token_data = tmp_client.exchange_code_for_token(
+                code=qp_code,
+                shop_id=int(qp_shop_id),
+                redirect_uri=init_redirect_url
+            )
+            
+            new_at = str(token_data.get("access_token", "")).strip()
+            new_rt = str(token_data.get("refresh_token", "")).strip()
+            
+            if new_at:
+                st.session_state["access_token"] = new_at
+                st.session_state["refresh_token"] = new_rt
+                st.session_state["shop_id"] = qp_shop_id
+                st.session_state["_last_oauth_code_exchanged"] = qp_code
+                st.session_state["_sync_token_inputs"] = True
+                
+                # Salva no tokens.json e faz push
+                new_tokens = {
+                    "partner_id": init_partner_id,
+                    "partner_key": init_partner_key,
+                    "shop_id": qp_shop_id,
+                    "access_token": new_at,
+                    "refresh_token": new_rt,
+                    "redirect_url": init_redirect_url,
+                    "api_base_url": init_api_base_url
+                }
+                save_tokens(new_tokens)
+                git_persist_data() # Salva no Git automaticamente
+                
+                st.sidebar.success("Login realizado com sucesso! Tokens salvos no Git.")
+                time.sleep(1)
+                st.rerun()
+        except Exception as exc:
+            st.sidebar.error(f"Erro no auto-login: {exc}")
 
-    allow_overwrite = preferred_env == "Produção"
+    # --- UI Simplificada ---
+    
+    # Se temos token válido (ou refresh token), mostramos status conectado
+    has_token = bool(st.session_state.get("access_token"))
+    has_refresh = bool(st.session_state.get("refresh_token"))
+    
+    if has_token:
+        st.sidebar.success(f"Conectado (Shop ID: {st.session_state.get('shop_id')})")
+        if st.sidebar.button("Desconectar / Trocar Conta"):
+            st.session_state["access_token"] = ""
+            st.session_state["refresh_token"] = ""
+            st.session_state["shop_id"] = ""
+            # Limpa tokens.json
+            save_tokens({})
+            git_persist_data()
+            st.rerun()
+    else:
+        st.sidebar.warning("Desconectado")
+        # Botão grande de login
+        if init_partner_id and init_partner_key and init_redirect_url:
+            try:
+                tmp_client = ShopeeClient(
+                    partner_id=int(init_partner_id),
+                    partner_key=init_partner_key,
+                    shop_id=0,
+                    access_token="",
+                    base_url=init_api_base_url or BASE_URL,
+                )
+                auth_url = tmp_client.build_authorize_url(init_redirect_url)
+                st.sidebar.link_button("🔐 Fazer Login na Shopee", auth_url, type="primary")
+            except Exception:
+                st.sidebar.error("Erro ao gerar link de login. Verifique configurações.")
 
-    if preferred_partner_id and (not current_partner_id or (allow_overwrite and current_partner_id == test_partner_id)):
-        st.session_state["partner_id"] = str(preferred_partner_id)
-    if preferred_partner_key and (not current_partner_key or (allow_overwrite and current_partner_key == test_partner_key)):
-        st.session_state["partner_key"] = str(preferred_partner_key)
-    if preferred_shop_id and (not current_shop_id or (allow_overwrite and current_shop_id == test_shop_id)):
-        st.session_state["shop_id"] = str(preferred_shop_id)
+    # Expander para configurações manuais (escondido por padrão se estiver tudo ok)
+    with st.sidebar.expander("Configurações Avançadas / Manuais", expanded=not (has_token or has_refresh)):
+        partner_id = st.text_input("Partner ID", value=st.session_state.get("partner_id", ""), key="partner_id_input")
+        partner_key = st.text_input("Partner Key", value=st.session_state.get("partner_key", ""), type="password", key="partner_key_input")
+        
+        # Atualiza session state quando user digita
+        if partner_id != st.session_state.get("partner_id"): st.session_state["partner_id"] = partner_id
+        if partner_key != st.session_state.get("partner_key"): st.session_state["partner_key"] = partner_key
 
-    # Access token só é auto-preenchido no Sandbox (token de teste). Em Produção, o correto
-    # é obter via OAuth (code -> access_token).
-    if preferred_access_token and (not current_access_token or current_access_token == test_access_token):
-        st.session_state["access_token"] = str(preferred_access_token)
-
-    # Secrets (Streamlit Cloud) e ENV têm prioridade sobre arquivo local.
-    for source in (secrets_creds, env_creds):
-        if source.get("partner_id") and not st.session_state.get("partner_id"):
-            st.session_state["partner_id"] = str(source["partner_id"])
-        if source.get("partner_key") and not st.session_state.get("partner_key"):
-            st.session_state["partner_key"] = str(source["partner_key"])
-        if source.get("shop_id") and not st.session_state.get("shop_id"):
-            st.session_state["shop_id"] = str(source["shop_id"])
-        if source.get("access_token") and not st.session_state.get("access_token"):
-            st.session_state["access_token"] = str(source["access_token"])
-        if source.get("refresh_token") and not st.session_state.get("refresh_token"):
-            st.session_state["refresh_token"] = str(source["refresh_token"])
-        if source.get("redirect_url") and not st.session_state.get("redirect_url"):
-            st.session_state["redirect_url"] = str(source["redirect_url"])
-        if source.get("api_base_url") and not st.session_state.get("api_base_url"):
-            st.session_state["api_base_url"] = str(source["api_base_url"])
-
-    # Garantir que inputs iniciem com o estado interno (sem sobrescrever se usuário já digitou).
-    if not str(st.session_state.get("shop_id_input") or "").strip() and str(st.session_state.get("shop_id") or "").strip():
-        st.session_state["shop_id_input"] = str(st.session_state.get("shop_id") or "")
-    if not str(st.session_state.get("access_token_input") or "").strip() and str(st.session_state.get("access_token") or "").strip():
-        st.session_state["access_token_input"] = str(st.session_state.get("access_token") or "")
-    if not str(st.session_state.get("refresh_token_input") or "").strip() and str(st.session_state.get("refresh_token") or "").strip():
-        st.session_state["refresh_token_input"] = str(st.session_state.get("refresh_token") or "")
-
-    # Mensagens "flash" (aparecem uma vez)
-    if str(st.session_state.get("_flash_sidebar") or "").strip():
-        st.sidebar.success(str(st.session_state.get("_flash_sidebar") or ""))
-        st.session_state["_flash_sidebar"] = ""
-
-    st.sidebar.caption(
-        "Dica: em **Produção (Live)** use as credenciais LIVE do console Shopee e obtenha o token via OAuth. "
-        "Em **Sandbox (Teste)** use as credenciais TEST + shop/token do sandbox."
-    )
-
-    partner_id = st.sidebar.text_input(
-        "Partner ID",
-        key="partner_id",
-        help=(
-            "Produção/Live: use o **Live Partner_id** do seu app no Shopee Open Platform. "
-            "Sandbox/Teste: use o **Test Partner_id**."
-        ),
-    )
-    partner_key = st.sidebar.text_input(
-        "Partner Key (HMAC)",
-        type="password",
-        key="partner_key",
-        help=(
-            "Produção/Live: use a **Live API Partner Key**. "
-            "Sandbox/Teste: use a **Test API Partner Key**."
-        ),
-    )
-    shop_id_input = st.sidebar.text_input(
-        "Shop ID",
-        key="shop_id_input",
-        help=(
-            "Produção/Live: use o **shop_id da sua loja real** (normalmente vem no redirect do OAuth). "
-            "Sandbox/Teste: use o **Shop ID do sandbox**."
-        ),
-    )
-    access_token_input = st.sidebar.text_input(
-        "Access Token",
-        type="password",
-        key="access_token_input",
-        help=(
-            "Produção/Live: é o **access_token LIVE** obtido ao trocar o `code` no bloco OAuth abaixo. "
-            "Sandbox/Teste: use o token de teste (ex.: AccessTokenTest)."
-        ),
-    )
-
-    # Mostra o refresh_token para permitir salvar em Secrets (Streamlit Cloud).
-    # Sem isso, o usuário não consegue persistir o token entre reinícios.
-    refresh_token_input = st.sidebar.text_input(
-        "Refresh Token (Live)",
-        type="password",
-        key="refresh_token_input",
-        help=(
-            "Produção/Live: token de longa duração retornado no OAuth e/ou ao renovar. "
-            "Recomendado salvar no Streamlit Cloud em Secrets como SHOPEE_REFRESH_TOKEN."
-        ),
-    )
-
-    # Sincroniza inputs -> estado interno (chaves internas não são widgets).
-    st.session_state["shop_id"] = str(shop_id_input or "").strip()
-    st.session_state["access_token"] = str(access_token_input or "").strip()
-    st.session_state["refresh_token"] = str(refresh_token_input or "").strip()
-
-    shop_id = st.session_state["shop_id"]
-    access_token = st.session_state["access_token"]
-
-    with st.sidebar.expander("Opções avançadas (API)"):
-        api_env = st.selectbox(
-            "Ambiente",
-            options=["Sandbox", "Produção"],
-            key="api_env",
-            help=(
-                "Sandbox para testes; Produção atualiza a loja real. "
-                "O host padrão é preenchido automaticamente."
-            ),
+        shop_id_input = st.text_input(
+            "Shop ID",
+            value=st.session_state.get("shop_id_input", ""),
+            key="shop_id_widget",
         )
+        access_token_input = st.text_input(
+            "Access Token",
+            value=st.session_state.get("access_token_input", ""),
+            type="password",
+            key="access_token_widget",
+        )
+        refresh_token_input = st.text_input(
+            "Refresh Token",
+            value=st.session_state.get("refresh_token_input", ""),
+            type="password",
+            key="refresh_token_widget",
+        )
+        
+        # Sincroniza widgets -> session
+        st.session_state["shop_id"] = shop_id_input
+        st.session_state["access_token"] = access_token_input
+        st.session_state["refresh_token"] = refresh_token_input
 
+        api_env = st.selectbox("Ambiente", ["Produção", "Sandbox"], index=0 if preferred_env == "Produção" else 1)
+        st.session_state["api_env"] = api_env
+        
+        # ... (resto das configs manuais se necessário) ...
+        
         api_region = st.selectbox(
             "Região (host de produção)",
             options=["Brasil", "Global"],
@@ -1915,252 +1988,98 @@ def sidebar_setup() -> None:
 
         api_base_url = st.text_input(
             "API Base URL",
-            key="api_base_url",
-            help=(
-                "Host base da API Shopee (somente o host, sem /api/v2). "
-                "Para BR (produção): https://openplatform.shopee.com.br . "
-                "Para Global (produção): https://partner.shopeemobile.com . "
-                "Para sandbox: use o host indicado no API Test Tool (ex.: ...sandbox...sg)."
-            ),
+            value=st.session_state.get("api_base_url", ""),
+            key="api_base_url_widget",
         )
+        st.session_state["api_base_url"] = api_base_url
+        
+        redirect_url = st.text_input(
+            "Redirect URL",
+            value=st.session_state.get("redirect_url", ""),
+            key="redirect_url_widget",
+        )
+        st.session_state["redirect_url"] = redirect_url
 
-        if api_env == "Produção":
-            st.warning(
-                "Produção: as atualizações de estoque afetam sua loja real.",
-                icon="⚠️",
+    # Mensagens "flash" (aparecem uma vez)
+    if str(st.session_state.get("_flash_sidebar") or "").strip():
+        st.sidebar.success(str(st.session_state.get("_flash_sidebar") or ""))
+        st.session_state["_flash_sidebar"] = ""
+
+    # --- Fim do Setup ---
+
+    # Auto-renovação: se houver refresh_token (Secrets/ENV/Git), evita ter que reautorizar.
+    # Só tenta se NÃO tiver access_token válido ainda.
+    if (
+        preferred_env == "Produção"
+        and not st.session_state.get("_auto_token_bootstrap_done")
+        and not str(st.session_state.get("access_token") or "").strip()
+        and str(st.session_state.get("refresh_token") or "").strip()
+        and str(st.session_state.get("partner_id") or "").strip()
+        and str(st.session_state.get("partner_key") or "").strip()
+        and str(st.session_state.get("shop_id") or "").strip()
+        and str(st.session_state.get("api_base_url") or "").strip()
+    ):
+        try:
+            previous_rt = str(st.session_state.get("refresh_token") or "").strip()
+            tmp_client = ShopeeClient(
+                partner_id=int(st.session_state["partner_id"]),
+                partner_key=str(st.session_state["partner_key"]),
+                shop_id=0,
+                access_token="",
+                base_url=str(st.session_state["api_base_url"] or BASE_URL),
             )
-
-        # Auto-renovação: se houver refresh_token (Secrets/ENV), evita ter que reautorizar.
-        if (
-            api_env == "Produção"
-            and not st.session_state.get("_auto_token_bootstrap_done")
-            and not str(st.session_state.get("access_token") or "").strip()
-            and not str(st.session_state.get("oauth_code") or "").strip()
-            and str(st.session_state.get("refresh_token") or "").strip()
-            and str(st.session_state.get("partner_id") or "").strip()
-            and str(st.session_state.get("partner_key") or "").strip()
-            and str(st.session_state.get("shop_id") or "").strip()
-            and str(st.session_state.get("api_base_url") or "").strip()
-        ):
-            try:
-                previous_rt = str(st.session_state.get("refresh_token") or "").strip()
-                tmp_client = ShopeeClient(
-                    partner_id=int(st.session_state["partner_id"]),
-                    partner_key=str(st.session_state["partner_key"]),
-                    shop_id=0,
-                    access_token="",
-                    base_url=str(st.session_state["api_base_url"] or BASE_URL),
+            with st.spinner("Renovando sessão (refresh token)..."):
+                token_data = tmp_client.refresh_access_token(
+                    refresh_token=previous_rt,
+                    shop_id=int(str(st.session_state.get("shop_id") or "0").strip()),
                 )
-                with st.spinner("Renovando access token automaticamente (refresh_token)..."):
-                    token_data = tmp_client.refresh_access_token(
-                        refresh_token=str(st.session_state.get("refresh_token") or "").strip(),
-                        shop_id=int(str(st.session_state.get("shop_id") or "0").strip()),
-                    )
-                st.session_state["access_token"] = str(token_data.get("access_token", ""))
-                new_rt = str(token_data.get("refresh_token", "") or "").strip()
+            
+            new_at = str(token_data.get("access_token", "")).strip()
+            new_rt = str(token_data.get("refresh_token", "") or "").strip()
+            
+            if new_at:
+                st.session_state["access_token"] = new_at
                 if new_rt:
                     st.session_state["refresh_token"] = new_rt
+                
                 st.session_state["last_token_refresh_ts"] = int(time.time())
-                if st.session_state.get("access_token"):
-                    st.success("Access token renovado automaticamente via refresh_token.")
-                    st.session_state["_flash_sidebar"] = "Access token renovado automaticamente via refresh_token."
-                    st.session_state["_sync_token_inputs"] = True
-                    st.rerun()
-                if new_rt and previous_rt and new_rt != previous_rt:
-                    st.info(
-                        "A Shopee rotacionou seu refresh_token. Atualize o Secrets do Streamlit Cloud com o novo valor:\n"
-                        f"SHOPEE_REFRESH_TOKEN = \"{new_rt}\""
-                    )
-            except Exception as exc:  # noqa: BLE001
-                # Se o refresh_token estiver errado (mismatch com shop_id), não vale ficar
-                # tentando a cada carregamento. Limpamos da sessão para o usuário trocar via OAuth.
-                if "error_param" in str(exc):
-                    st.session_state["refresh_token"] = ""
-                    st.warning(
-                        "Não foi possível auto-renovar o token (refresh_token inválido para este shop_id). "
-                        "Vou ignorar o refresh_token nesta sessão. Gere um novo token pelo OAuth e atualize o Secrets.\n\n"
-                        f"Detalhes: {exc}"
-                    )
-                else:
-                    st.warning(f"Não foi possível auto-renovar o token: {exc}")
-            finally:
-                st.session_state["_auto_token_bootstrap_done"] = True
-
-        st.divider()
-        st.markdown("**OAuth (Live) – trocar code por token**")
-        st.caption(
-            "Após autorizar no console, cole aqui o `code` e o `shop_id` retornados no redirect. "
-            "O token é salvo apenas na sessão do Streamlit."
-        )
-
-        redirect_url = st.text_input(
-            "Redirect URL (Live)",
-            key="redirect_url",
-            help=(
-                "Precisa bater exatamente com o Redirect URL usado no 'Authorize Live Partner'. "
-                "Recomendado: https://razaiestoque.streamlit.app/"
-            ),
-        )
-
-        st.caption("Dica: gere o link de autorização aqui para evitar mismatch de host/app.")
-        if st.button("Gerar link de autorização (Authorize Live Partner)"):
-            if not (partner_id and partner_key and api_base_url):
-                st.error("Preencha Partner ID, Partner Key e API Base URL antes.")
-            elif not str(redirect_url or "").strip():
-                st.error("Preencha o Redirect URL (Live) antes.")
+                st.session_state["_flash_sidebar"] = "Sessão restaurada com sucesso!"
+                
+                # Se mudou o refresh token, salva no Git
+                if new_rt and new_rt != previous_rt:
+                    new_tokens = {
+                        "partner_id": st.session_state["partner_id"],
+                        "partner_key": st.session_state["partner_key"],
+                        "shop_id": st.session_state["shop_id"],
+                        "access_token": new_at,
+                        "refresh_token": new_rt,
+                        "redirect_url": st.session_state["redirect_url"],
+                        "api_base_url": st.session_state["api_base_url"]
+                    }
+                    save_tokens(new_tokens)
+                    git_persist_data()
+                
+                st.rerun()
+        except Exception as exc:
+            # Se falhar, limpa para forçar login novo
+            if "error_param" in str(exc):
+                st.session_state["refresh_token"] = ""
+                st.warning("Sessão expirada. Faça login novamente.")
             else:
-                try:
-                    tmp_client = ShopeeClient(
-                        partner_id=int(str(partner_id).strip()),
-                        partner_key=str(partner_key),
-                        shop_id=0,
-                        access_token="",
-                        base_url=str(api_base_url or BASE_URL),
-                    )
-                    auth_url = tmp_client.build_authorize_url(str(redirect_url).strip())
-                    st.write("Abra este link, autorize, e volte para o app com `?code=...&shop_id=...`:")
-                    st.code(auth_url)
-                except Exception as exc:  # noqa: BLE001
-                    st.error(f"Falha ao gerar link de autorização: {exc}")
+                st.warning(f"Falha ao restaurar sessão: {exc}")
+        finally:
+            st.session_state["_auto_token_bootstrap_done"] = True
 
-        # Ajuda de copy/paste para Secrets
-        if str(st.session_state.get("refresh_token") or "").strip():
-            rt_for_copy = str(st.session_state.get("refresh_token") or "").strip()
-            st.code(f'SHOPEE_REFRESH_TOKEN = "{rt_for_copy}"')
-
-        oauth_code = st.text_input(
-            "Authorization code (somente Live)",
-            key="oauth_code",
-            help="Produção/Live: code do redirect do OAuth. Válido por poucos minutos e uso único.",
-        )
-        oauth_shop_id = st.text_input(
-            "Shop ID (do redirect – Live)",
-            key="oauth_shop_id",
-            help="Produção/Live: shop_id retornado no redirect do OAuth (da sua loja real).",
-        )
-
-        col_a, col_b = st.columns(2)
-
-        if col_a.button("Trocar code por access token"):
-            if not (partner_id and partner_key and api_base_url):
-                st.error("Preencha Partner ID, Partner Key e API Base URL antes.")
-            elif not (oauth_code.strip() and oauth_shop_id.strip()):
-                st.error("Preencha o code e o shop_id retornados no redirect.")
-            elif not str(redirect_url or "").strip():
-                st.error(
-                    "Preencha o Redirect URL (Live). Ele precisa ser exatamente o mesmo cadastrado/" 
-                    "usado no Authorize Live Partner (incluindo https e barra final, se houver)."
-                )
-            else:
-                try:
-                    # Alguns redirects/cópias deixam o code percent-encoded (ex.: %2B).
-                    # Usamos unquote (não unquote_plus) para NÃO transformar '+' em espaço.
-                    raw_code = oauth_code.strip()
-                    decoded_code = urllib.parse.unquote(raw_code)
-                    # Fallback: alguns parses/cópias transformam '+' em espaço.
-                    code_to_exchange = decoded_code.replace(" ", "+")
-
-                    with st.expander("Debug OAuth (se der erro)"):
-                        st.write(
-                            {
-                                "api_base_url": str(api_base_url or "").strip(),
-                                "redirect_url_sent": str(redirect_url or "").strip(),
-                                "shop_id_sent": str(oauth_shop_id or "").strip(),
-                                "code_len": len(code_to_exchange),
-                                "code_preview": f"{code_to_exchange[:8]}...{code_to_exchange[-8:]}" if len(code_to_exchange) > 16 else code_to_exchange,
-                            }
-                        )
-                    if code_to_exchange == str(st.session_state.get("_last_oauth_code_exchanged") or ""):
-                        st.warning(
-                            "Esse code já foi tentado nesta sessão. Gere um novo code no Open Platform e tente novamente."
-                        )
-                        st.stop()
-
-                    tmp_client = ShopeeClient(
-                        partner_id=int(partner_id),
-                        partner_key=partner_key,
-                        shop_id=0,
-                        access_token="",
-                        base_url=api_base_url or BASE_URL,
-                    )
-                    with st.spinner("Trocando code por token..."):
-                        token_data = tmp_client.exchange_code_for_token(
-                            code=code_to_exchange,
-                            shop_id=int(oauth_shop_id.strip()),
-                            redirect_uri=str(redirect_url or "").strip() or None,
-                        )
-
-                    st.session_state["_last_oauth_code_exchanged"] = code_to_exchange
-
-                    st.session_state["shop_id"] = str(oauth_shop_id.strip())
-                    st.session_state["access_token"] = str(token_data.get("access_token", ""))
-                    st.session_state["refresh_token"] = str(token_data.get("refresh_token", ""))
-                    st.session_state["last_token_refresh_ts"] = int(time.time())
-
-                    st.session_state["_flash_sidebar"] = "Token obtido com sucesso (OAuth)."
-                    st.session_state["_sync_token_inputs"] = True
-                    st.rerun()
-
-                    if st.session_state["access_token"]:
-                        st.success("Token obtido com sucesso. Agora clique em 'Sincronizar Dados da Shopee'.")
-                        if st.session_state.get("refresh_token"):
-                            st.info(
-                                "Para não precisar reautorizar no Open Platform toda vez, salve também o refresh_token no Streamlit Cloud em Secrets como: "
-                                "SHOPEE_REFRESH_TOKEN = \"...\""
-                            )
-                    else:
-                        st.warning("Resposta sem access_token. Verifique a resposta abaixo.")
-                        st.json(token_data)
-                except Exception as exc:  # noqa: BLE001
-                    st.error(f"Falha ao obter token: {exc}")
-
-        if col_b.button("Renovar access token (refresh_token)"):
-            rt = str(st.session_state.get("refresh_token") or "").strip()
-            sid = str(st.session_state.get("shop_id") or "").strip()
-            if not (partner_id and partner_key and api_base_url):
-                st.error("Preencha Partner ID, Partner Key e API Base URL antes.")
-            elif not (rt and sid):
-                st.error("Precisa ter refresh_token e shop_id na sessão (faça a troca do code primeiro).")
-            else:
-                try:
-                    previous_rt = rt
-                    tmp_client = ShopeeClient(
-                        partner_id=int(partner_id),
-                        partner_key=partner_key,
-                        shop_id=0,
-                        access_token="",
-                        base_url=api_base_url or BASE_URL,
-                    )
-                    with st.spinner("Renovando access token..."):
-                        token_data = tmp_client.refresh_access_token(
-                            refresh_token=rt,
-                            shop_id=int(sid),
-                        )
-                    st.session_state["access_token"] = str(token_data.get("access_token", ""))
-                    new_rt = str(token_data.get("refresh_token", "") or "").strip()
-                    if new_rt:
-                        st.session_state["refresh_token"] = new_rt
-                    st.session_state["last_token_refresh_ts"] = int(time.time())
-                    st.success("Access token renovado. Agora você pode sincronizar novamente.")
-                    st.session_state["_flash_sidebar"] = "Access token renovado (refresh_token)."
-                    st.session_state["_sync_token_inputs"] = True
-                    st.rerun()
-                    if new_rt and previous_rt and new_rt != previous_rt:
-                        st.info(
-                            "A Shopee rotacionou seu refresh_token. Atualize o Secrets do Streamlit Cloud com o novo valor:\n"
-                            f"SHOPEE_REFRESH_TOKEN = \"{new_rt}\""
-                        )
-                except Exception as exc:  # noqa: BLE001
-                    st.error(f"Falha ao renovar token: {exc}")
+    st.sidebar.markdown("---")
 
     st.sidebar.caption(
-        "As credenciais não são salvas em disco; apenas em sessão."
+        "As credenciais são salvas em tokens.json e persistidas no Git."
     )
 
     if st.sidebar.button("Sincronizar Dados da Shopee"):
         # 1. Tenta atualizar grupos do Git antes de tudo
         with st.spinner("Verificando atualizações de grupos (Git)..."):
-            git_msg = git_pull_groups()
+            git_msg = git_pull_data()
             if "Sucesso" in git_msg:
                 st.toast("Grupos atualizados do GitHub!", icon="✅")
             elif "Erro" in git_msg:
@@ -2210,7 +2129,7 @@ def sidebar_setup() -> None:
     
     if col_g1.button("Salvar no GitHub"):
         with st.spinner("Enviando..."):
-            msg = git_persist_groups()
+            msg = git_persist_data()
             if "Sucesso" in msg:
                 st.sidebar.success(msg)
             elif "Nenhuma alteração" in msg:
@@ -2220,7 +2139,7 @@ def sidebar_setup() -> None:
 
     if col_g2.button("Baixar do GitHub"):
         with st.spinner("Baixando..."):
-            msg = git_pull_groups()
+            msg = git_pull_data()
             if "Sucesso" in msg:
                 st.sidebar.success(msg)
                 time.sleep(1)
