@@ -2239,6 +2239,9 @@ def _render_inventory_table(df: pd.DataFrame, groups: List[Dict], client: Option
     max_stock = max(df["Estoque Atual"]) if not df.empty else 100
     if max_stock <= 0: max_stock = 100
 
+    # Usa session_state para persistir edições entre reruns
+    editor_key = f"inventory_editor_{key_suffix}"
+    
     edited_df = st.data_editor(
         df,
         column_config={
@@ -2265,10 +2268,11 @@ def _render_inventory_table(df: pd.DataFrame, groups: List[Dict], client: Option
 
     # Botão de Salvar
     st.markdown("<br>", unsafe_allow_html=True)
-    col_save, _ = st.columns([1, 4])
     
-    if col_save.button("💾 Aplicar Alterações de Estoque", type="primary", key=f"save_btn_{key_suffix}"):
-        st.warning("🔍 DEBUG: Botão clicado!")  # DEBUG
+    st.warning(f"🔍 DEBUG: Prestes a criar botão com key=save_btn_{key_suffix}")  # DEBUG
+    
+    if st.button("💾 Aplicar Alterações de Estoque", type="primary", key=f"save_btn_{key_suffix}"):
+        st.warning("🔍 DEBUG: Botão clicado!")
         
         if not client:
             st.error("Conecte-se à Shopee primeiro.")
