@@ -2441,6 +2441,11 @@ def main():
             border-right: 1px solid #e9ecef;
         }
         
+        /* Força texto escuro na sidebar (corrige problema de tema escuro) */
+        [data-testid="stSidebar"] * {
+            color: #212529 !important;
+        }
+        
         /* Cards de métricas mais bonitos */
         div[data-testid="stMetric"] {
             background-color: #ffffff;
