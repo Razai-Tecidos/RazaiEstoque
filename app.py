@@ -2306,7 +2306,7 @@ def _render_inventory_table(df: pd.DataFrame, groups: List[Dict], client: Option
                 group = next((g for g in groups if g["group_id"] == group_id), None)
                 if not group: continue
 
-                status.write(f"Atualizando '{group['master_name']}' para {new_stock}...")
+                status.write(f"📦 Atualizando '{group['master_name']}' para {new_stock}...")
                 
                 # Lógica de update
                 per_item = {}
@@ -2317,7 +2317,19 @@ def _render_inventory_table(df: pd.DataFrame, groups: List[Dict], client: Option
 
                 for item_id, model_ids in per_item.items():
                     try:
-                        client.update_stock(item_id=item_id, model_ids=model_ids, new_stock=new_stock)
+                        status.write(f"   → API: item_id={item_id}, model_ids={model_ids}, stock={new_stock}")
+                        result = client.update_stock(item_id=item_id, model_ids=model_ids, new_stock=new_stock)
+                        
+                        # Mostra resposta da API
+                        response = result.get("response", {})
+                        success_list = response.get("success_list", [])
+                        failure_list = response.get("failure_list", [])
+                        
+                        if success_list:
+                            status.write(f"   ✅ Sucesso: {len(success_list)} model(s)")
+                        if failure_list:
+                            for f in failure_list:
+                                status.write(f"   ⚠️ Falha model {f.get('model_id')}: {f.get('failed_reason')}")
                         
                         # Atualiza cache local
                         for mid in model_ids:
@@ -2328,6 +2340,7 @@ def _render_inventory_table(df: pd.DataFrame, groups: List[Dict], client: Option
 
                         changes_count += 1
                     except Exception as e:
+                        status.write(f"   ❌ ERRO: {e}")
                         errors.append(f"{group['master_name']}: {e}")
             
             if errors:
