@@ -2453,6 +2453,13 @@ def main():
             padding: 15px;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            color: #212529 !important; /* Força texto escuro */
+        }
+
+        /* Força cor dos labels e valores dentro das métricas */
+        div[data-testid="stMetric"] label,
+        div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
+            color: #212529 !important;
         }
         
         /* Títulos mais sóbrios */
