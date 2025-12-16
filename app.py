@@ -1985,46 +1985,77 @@ def tab_inventory():
         key = (int(m.get("item_id")), m.get("model_id"))
         stock_index[key] = m.get("normal_stock")
 
-    st.markdown("**Grupos Mestres cadastrados:**")
+    st.markdown("**Grupos Mestres cadastrados (organizados por tecido):**")
 
-    # Cabeçalho da "tabela visual"
-    header_cols = st.columns([3, 2, 3, 2])
-    header_cols[0].markdown("**Nome Mestre**")
-    header_cols[1].markdown("**Qtd Itens Vinculados**")
-    header_cols[2].markdown("**Estoque Atual (Soma/Média)**")
-    header_cols[3].markdown("**Novo Estoque**")
-
-    # Campos de entrada (um por grupo)
-    for g in groups:
-        group_id = g.get("group_id")
-        items = g.get("items", [])
-
-        # Calcula soma/média usando o índice de estoque
-        stocks: List[int] = []
+    def _group_fabric_key(g: Dict[str, Any]) -> str:
+        # Preferir inferir pelo título do item (mais consistente que master_name)
+        items = g.get("items", []) or []
+        counts: Dict[str, int] = {}
         for it in items:
-            key = (int(it.get("item_id")), it.get("model_id"))
-            s = stock_index.get(key)
-            if s is not None:
-                stocks.append(int(s))
+            fk = extract_fabric_from_title(str(it.get("item_name") or ""))
+            if fk:
+                counts[fk] = counts.get(fk, 0) + 1
+        if counts:
+            return max(counts.items(), key=lambda kv: kv[1])[0]
 
-        if stocks:
-            soma = sum(stocks)
-            media = soma / len(stocks)
-            estoque_str = f"Soma={soma} | Média={media:.1f}"
-        else:
-            estoque_str = "-"
+        # Fallback: tenta usar o começo do master_name (antes de cor comum)
+        mk = extract_fabric_from_title(str(g.get("master_name") or ""))
+        return mk or "(sem tecido)"
 
-        cols = st.columns([3, 2, 3, 2])
-        cols[0].write(g.get("master_name", "(sem nome)"))
-        cols[1].write(len(items))
-        cols[2].write(estoque_str)
+    # Agrupa por tecido
+    fabric_to_groups: Dict[str, List[Dict[str, Any]]] = {}
+    for g in groups:
+        fabric_key = _group_fabric_key(g)
+        fabric_to_groups.setdefault(fabric_key, []).append(g)
 
-        # Campo de digitação do novo estoque (string, para permitir vazio)
-        cols[3].text_input(
-            "",
-            key=f"new_stock_{group_id}",
-            placeholder="ex: 0",
-        )
+    # Ordenação estável por rótulo legível
+    fabric_keys_sorted = sorted(
+        fabric_to_groups.keys(),
+        key=lambda k: (_titleize_words(k) if k and k != "(sem tecido)" else "zzz"),
+    )
+
+    for fabric_key in fabric_keys_sorted:
+        fabric_label = _titleize_words(fabric_key) if fabric_key and fabric_key != "(sem tecido)" else "(Sem tecido)"
+        st.markdown(f"### {fabric_label}")
+
+        # Cabeçalho da "tabela visual" por tecido
+        header_cols = st.columns([3, 2, 3, 2])
+        header_cols[0].markdown("**Nome Mestre**")
+        header_cols[1].markdown("**Qtd Itens Vinculados**")
+        header_cols[2].markdown("**Estoque Atual (Soma/Média)**")
+        header_cols[3].markdown("**Novo Estoque**")
+
+        # Campos de entrada (um por grupo)
+        for g in fabric_to_groups.get(fabric_key, []):
+            group_id = g.get("group_id")
+            items = g.get("items", [])
+
+            # Calcula soma/média usando o índice de estoque
+            stocks: List[int] = []
+            for it in items:
+                key = (int(it.get("item_id")), it.get("model_id"))
+                s = stock_index.get(key)
+                if s is not None:
+                    stocks.append(int(s))
+
+            if stocks:
+                soma = sum(stocks)
+                media = soma / len(stocks)
+                estoque_str = f"Soma={soma} | Média={media:.1f}"
+            else:
+                estoque_str = "-"
+
+            cols = st.columns([3, 2, 3, 2])
+            cols[0].write(g.get("master_name", "(sem nome)"))
+            cols[1].write(len(items))
+            cols[2].write(estoque_str)
+
+            # Campo de digitação do novo estoque (string, para permitir vazio)
+            cols[3].text_input(
+                "",
+                key=f"new_stock_{group_id}",
+                placeholder="ex: 0",
+            )
 
     if st.button("Atualizar Estoque em Massa"):
         if not client:
