@@ -244,6 +244,81 @@ def _validate_imported_groups_payload(payload: Any) -> List[Dict[str, Any]]:
     return out
 
 
+def refresh_group_names_from_models_cache(
+    groups: List[Dict[str, Any]],
+    models_cache: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Atualiza item_name/model_name dentro dos grupos com base no cache atual.
+
+    Mantém o vínculo por IDs (item_id + model_id). Retorna (groups_atualizados, qtd_itens_atualizados).
+    """
+    index: Dict[Tuple[int, Optional[int]], Dict[str, str]] = {}
+    for m in models_cache:
+        try:
+            iid = int(m.get("item_id"))
+        except Exception:
+            continue
+        mid = m.get("model_id")
+        index[(iid, mid)] = {
+            "item_name": str(m.get("item_name") or ""),
+            "model_name": str(m.get("model_name") or ""),
+        }
+
+    updated_count = 0
+    new_groups: List[Dict[str, Any]] = []
+    for g in groups:
+        g2 = dict(g)
+        items = list(g2.get("items") or [])
+        new_items: List[Dict[str, Any]] = []
+        changed = False
+
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            it2 = dict(it)
+            try:
+                iid = int(it2.get("item_id"))
+            except Exception:
+                new_items.append(it2)
+                continue
+            mid = it2.get("model_id")
+            rec = index.get((iid, mid))
+            if rec:
+                old_item = str(it2.get("item_name") or "")
+                old_model = str(it2.get("model_name") or "")
+                if rec.get("item_name") and rec["item_name"] != old_item:
+                    it2["item_name"] = rec["item_name"]
+                    changed = True
+                    updated_count += 1
+                if rec.get("model_name") != old_model:
+                    it2["model_name"] = rec["model_name"]
+                    changed = True
+                    updated_count += 1
+            new_items.append(it2)
+
+        g2["items"] = new_items
+
+        # Recalcula shopee_item_ids/model_ids para manter consistência
+        try:
+            g2["shopee_item_ids"] = sorted({int(i.get("item_id")) for i in new_items if i.get("item_id") is not None})
+        except Exception:
+            pass
+        try:
+            g2["shopee_model_ids"] = sorted(
+                {
+                    int(i.get("model_id"))
+                    for i in new_items
+                    if i.get("model_id") is not None
+                }
+            )
+        except Exception:
+            pass
+
+        new_groups.append(g2 if changed else g)
+
+    return new_groups, updated_count
+
+
 def load_test_credentials_from_file() -> Dict[str, Any]:
     """Lê credenciais (Sandbox e Live) do arquivo de texto local.
 
@@ -1732,6 +1807,17 @@ def sidebar_setup() -> None:
                 st.session_state["models_cache"] = models_cache
                 st.session_state["last_sync_ts"] = int(time.time())
 
+                # Re-sincroniza nomes dentro dos grupos salvos (se existirem)
+                try:
+                    existing_groups = load_groups()
+                    if existing_groups:
+                        refreshed, updated_count = refresh_group_names_from_models_cache(existing_groups, models_cache)
+                        if updated_count:
+                            save_groups(refreshed)
+                            st.sidebar.info(f"Nomes re-sincronizados em {updated_count} campos dentro dos grupos.")
+                except Exception as exc:  # noqa: BLE001
+                    st.sidebar.warning(f"Não foi possível re-sincronizar nomes dos grupos: {exc}")
+
                 st.sidebar.success(
                     f"Sincronização concluída. Modelos carregados: {len(models_cache)}"
                 )
@@ -1809,7 +1895,8 @@ def tab_mapping():
         st.session_state["mapping_selected_keys"] = []
 
     with st.expander("Sugestões automáticas (tecido + cor)"):
-        suggestions = build_suggested_fabric_color_groups(ungrouped_models, min_group_size=2)
+        suggestions_all = build_suggested_fabric_color_groups(ungrouped_models, min_group_size=2)
+        suggestions = suggestions_all
         if not suggestions:
             st.info("Nenhuma sugestão automática encontrada (ainda).")
         else:
@@ -1842,6 +1929,67 @@ def tab_mapping():
                     st.session_state["master_name_input"] = fabric_label
 
                 st.rerun()
+
+            # Criação automática em massa (sem precisar salvar grupo a grupo)
+            if cols[2].button("Criar TODOS os grupos sugeridos"):
+                # Índice rápido model_key -> model
+                model_by_key: Dict[str, Dict[str, Any]] = {}
+                for m in ungrouped_models:
+                    mk = f"{m.get('item_id')}:{m.get('model_id') if m.get('model_id') is not None else 'none'}"
+                    model_by_key[mk] = m
+
+                groups = load_groups()
+                created = 0
+                skipped = 0
+                with st.spinner("Criando grupos automaticamente..."):
+                    for sug in suggestions_all:
+                        model_keys = list(sug.get("model_keys") or [])
+                        selected_models = [model_by_key.get(k) for k in model_keys]
+                        selected_models = [m for m in selected_models if m is not None]
+
+                        if len(selected_models) < 2:
+                            skipped += 1
+                            continue
+
+                        fabric_label = str(sug.get("fabric_label") or "").strip()
+                        color_label = str(sug.get("color_label") or "").strip()
+                        master_name = f"{fabric_label} {color_label}".strip() if color_label and color_label != "(Sem cor)" else fabric_label
+                        if not master_name:
+                            skipped += 1
+                            continue
+
+                        group_id = str(uuid.uuid4())
+                        item_ids = sorted({int(m["item_id"]) for m in selected_models})
+                        model_ids = sorted({int(m["model_id"]) for m in selected_models if m.get("model_id") is not None})
+
+                        new_group = {
+                            "group_id": group_id,
+                            "master_name": master_name,
+                            "items": [
+                                {
+                                    "item_id": int(m["item_id"]),
+                                    "model_id": m.get("model_id"),
+                                    "item_name": m.get("item_name", ""),
+                                    "model_name": m.get("model_name", ""),
+                                }
+                                for m in selected_models
+                            ],
+                            "shopee_item_ids": item_ids,
+                            "shopee_model_ids": model_ids,
+                        }
+
+                        groups.append(new_group)
+                        created += 1
+
+                try:
+                    save_groups(groups)
+                    st.success(f"Grupos criados automaticamente: {created} (ignorados: {skipped}).")
+                    st.session_state["mapping_suggestion_active"] = False
+                    st.session_state["mapping_suggestion_keys"] = []
+                    st.session_state["mapping_selected_keys"] = []
+                    st.rerun()
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Falha ao salvar grupos criados automaticamente: {exc}")
 
             if st.session_state.get("mapping_suggestion_active"):
                 if cols[1].button("Limpar sugestão"):
