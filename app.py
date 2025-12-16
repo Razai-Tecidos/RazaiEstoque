@@ -392,29 +392,44 @@ def refresh_group_names_from_models_cache(
         # Tenta atualizar o master_name se ele parecer truncado (termina com " e")
         # ou se for muito curto e tivermos sugestão melhor
         current_master = str(g2.get("master_name") or "").strip()
+        
+        # Condição de reparo: termina com " e" OU é curto demais
         if current_master.endswith(" e") or len(current_master.split()) <= 3:
-            # Tenta reconstruir sugestão baseada nos itens atualizados
-            temp_models = []
-            for it in new_items:
-                temp_models.append({
-                    "item_name": it.get("item_name", ""),
-                    "model_name": it.get("model_name", "")
-                })
             
-            if temp_models:
-                # Usa a lógica de sugestão (que agora usa extract_color_from_model corrigido indiretamente ou suggest_master_name)
-                # suggest_master_name usa _find_first e monta partes.
-                # Mas o problema relatado era na sugestão automática que usa extract_color_from_model.
-                # Se o master_name foi gerado via sugestão automática, ele pode estar ruim.
-                # Vamos tentar regenerar via suggest_master_name que é mais robusto para nomes finais,
-                # OU podemos tentar re-extrair se for o caso.
+            # 1. Tenta extração robusta (Fabric + Color Extractor) - A mesma usada na criação automática
+            # Pega o primeiro item válido para extrair
+            best_new_name = ""
+            for it in new_items:
+                iname = it.get("item_name", "")
+                mname = it.get("model_name", "")
+                if iname:
+                    fab = extract_fabric_from_title(iname)
+                    col = extract_color_from_model(mname, iname)
+                    if fab:
+                        # Monta nome: "Viscolinho" + " " + "Folhagem Azul"
+                        parts = [_titleize_words(fab)]
+                        if col and col != "(Sem cor)":
+                            parts.append(_titleize_words(col))
+                        
+                        candidate = " ".join(parts).strip()
+                        if len(candidate) > len(best_new_name):
+                            best_new_name = candidate
+            
+            # 2. Se a extração robusta falhar ou for muito curta, tenta o suggest_master_name (fallback de keywords)
+            if not best_new_name or len(best_new_name.split()) < 2:
+                temp_models = [{"item_name": it.get("item_name", ""), "model_name": it.get("model_name", "")} for it in new_items]
+                fallback_name = suggest_master_name(temp_models)
+                if fallback_name and len(fallback_name) > len(best_new_name):
+                    best_new_name = fallback_name
+
+            # Aplica se for melhor que o atual (ou se o atual estiver quebrado com " e")
+            if best_new_name:
+                # Se o atual está quebrado ("... e"), aceitamos qualquer coisa válida que não termine em " e"
+                is_broken = current_master.endswith(" e")
+                is_improvement = len(best_new_name) > len(current_master)
                 
-                # Aqui usamos suggest_master_name que é a função de "fallback" inteligente
-                new_suggestion = suggest_master_name(temp_models)
-                
-                # Se a nova sugestão for mais longa e parecer válida, substitui
-                if new_suggestion and len(new_suggestion) > len(current_master):
-                    g2["master_name"] = new_suggestion
+                if (is_broken and not best_new_name.endswith(" e")) or (is_improvement and not best_new_name.endswith(" e")):
+                    g2["master_name"] = best_new_name
                     updated_count += 1
 
         # Recalcula shopee_item_ids/model_ids para manter consistência
