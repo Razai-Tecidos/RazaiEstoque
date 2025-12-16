@@ -2337,10 +2337,6 @@ def view_dashboard():
     st.caption("Edite a coluna 'Novo Estoque' e clique em Salvar no final da página.")
 
     _render_inventory_table(df, groups, client, key_suffix="dashboard")
-            time.sleep(1)
-            st.rerun()
-        elif not errors:
-            st.info("Nenhuma alteração detectada na coluna 'Novo Estoque'.")
 
 
 def view_settings():
