@@ -2269,11 +2269,7 @@ def _render_inventory_table(df: pd.DataFrame, groups: List[Dict], client: Option
     # Botão de Salvar
     st.markdown("<br>", unsafe_allow_html=True)
     
-    st.warning(f"🔍 DEBUG: Prestes a criar botão com key=save_btn_{key_suffix}")  # DEBUG
-    
     if st.button("💾 Aplicar Alterações de Estoque", type="primary", key=f"save_btn_{key_suffix}"):
-        st.warning("🔍 DEBUG: Botão clicado!")
-        
         if not client:
             st.error("Conecte-se à Shopee primeiro.")
             return
@@ -2281,8 +2277,6 @@ def _render_inventory_table(df: pd.DataFrame, groups: List[Dict], client: Option
         # Processa alterações
         changes_count = 0
         errors = []
-        
-        st.warning(f"🔍 DEBUG: edited_df tem {len(edited_df)} linhas")  # DEBUG
         
         with st.status("Processando atualizações...", expanded=True) as status:
             for index, row in edited_df.iterrows():
@@ -2292,21 +2286,20 @@ def _render_inventory_table(df: pd.DataFrame, groups: List[Dict], client: Option
                 if isinstance(new_val, list):
                     new_val = new_val[0] if new_val else None
                 
-                st.write(f"🔍 DEBUG row {index}: Novo Estoque = '{new_val}' (type={type(new_val).__name__})")  # DEBUG
-                
-                if pd.isna(new_val) if not isinstance(new_val, list) else False:
-                    st.write(f"   ⏭️ Pulando - valor NaN")  # DEBUG
-                    continue
+                # Pula valores vazios/None/NaN
+                try:
+                    if pd.isna(new_val):
+                        continue
+                except (ValueError, TypeError):
+                    pass
                     
                 if new_val is None or str(new_val).strip() == "":
-                    st.write(f"   ⏭️ Pulando - valor vazio ou None")  # DEBUG
                     continue
                 
                 group_id = row["group_id"]
                 try:
                     new_stock = int(float(new_val))
                 except (ValueError, TypeError):
-                    st.write(f"   ⏭️ Pulando - não conseguiu converter para int")  # DEBUG
                     continue
                 
                 # Encontra o grupo original
@@ -2315,7 +2308,7 @@ def _render_inventory_table(df: pd.DataFrame, groups: List[Dict], client: Option
 
                 status.write(f"Atualizando '{group['master_name']}' para {new_stock}...")
                 
-                # Lógica de update (copiada do original)
+                # Lógica de update
                 per_item = {}
                 for it in group.get("items", []):
                     item_id = int(it.get("item_id"))
@@ -2324,15 +2317,10 @@ def _render_inventory_table(df: pd.DataFrame, groups: List[Dict], client: Option
 
                 for item_id, model_ids in per_item.items():
                     try:
-                        result = client.update_stock(item_id=item_id, model_ids=model_ids, new_stock=new_stock)
-                        
-                        # DEBUG: Mostra response da API
-                        st.info(f"📡 API Response para item_id={item_id}, model_ids={model_ids}:")
-                        st.json(result)
+                        client.update_stock(item_id=item_id, model_ids=model_ids, new_stock=new_stock)
                         
                         # Atualiza cache local
                         for mid in model_ids:
-                            # Atualiza session state cache
                             for m in st.session_state["models_cache"]:
                                 m_mid = int(m.get("model_id")) if m.get("model_id") is not None else None
                                 if int(m.get("item_id")) == item_id and m_mid == mid:
