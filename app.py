@@ -2268,6 +2268,8 @@ def _render_inventory_table(df: pd.DataFrame, groups: List[Dict], client: Option
     col_save, _ = st.columns([1, 4])
     
     if col_save.button("💾 Aplicar Alterações de Estoque", type="primary", key=f"save_btn_{key_suffix}"):
+        st.warning("🔍 DEBUG: Botão clicado!")  # DEBUG
+        
         if not client:
             st.error("Conecte-se à Shopee primeiro.")
             return
@@ -2276,16 +2278,22 @@ def _render_inventory_table(df: pd.DataFrame, groups: List[Dict], client: Option
         changes_count = 0
         errors = []
         
+        st.warning(f"🔍 DEBUG: edited_df tem {len(edited_df)} linhas")  # DEBUG
+        
         with st.status("Processando atualizações...", expanded=True) as status:
             for index, row in edited_df.iterrows():
                 new_val = row["Novo Estoque"]
+                st.write(f"🔍 DEBUG row {index}: Novo Estoque = '{new_val}' (type={type(new_val).__name__})")  # DEBUG
+                
                 if pd.isna(new_val) or new_val is None or str(new_val).strip() == "":
+                    st.write(f"   ⏭️ Pulando - valor vazio ou None")  # DEBUG
                     continue
                 
                 group_id = row["group_id"]
                 try:
                     new_stock = int(float(new_val))
                 except (ValueError, TypeError):
+                    st.write(f"   ⏭️ Pulando - não conseguiu converter para int")  # DEBUG
                     continue
                 
                 # Encontra o grupo original
