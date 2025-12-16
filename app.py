@@ -2111,6 +2111,148 @@ def view_mapping():
                     st.rerun()
 
 
+def _render_inventory_table(df: pd.DataFrame, groups: List[Dict], client: Optional[ShopeeClient], key_suffix: str = ""):
+    """Renderiza a tabela de estoque e processa atualizações."""
+    
+    # Calcula max_value seguro para a barra de progresso
+    max_stock = max(df["Estoque Atual"]) if not df.empty else 100
+    if max_stock <= 0: max_stock = 100
+
+    edited_df = st.data_editor(
+        df,
+        column_config={
+            "group_id": None, # Esconde ID
+            "Nome do Grupo": st.column_config.TextColumn("Nome do Produto (Grupo)", width="large", disabled=True),
+            "Variações": st.column_config.NumberColumn("Qtd. Anúncios", disabled=True),
+            "Estoque Atual": st.column_config.ProgressColumn(
+                "Estoque Atual", 
+                format="%d", 
+                min_value=0, 
+                max_value=max_stock,
+            ),
+            "Novo Estoque": st.column_config.NumberColumn(
+                "Novo Estoque (Editar)", 
+                min_value=0, 
+                step=1,
+                required=False
+            )
+        },
+        hide_index=True,
+        use_container_width=True,
+        key=f"inventory_editor_{key_suffix}"
+    )
+
+    # Botão de Salvar
+    st.markdown("<br>", unsafe_allow_html=True)
+    col_save, _ = st.columns([1, 4])
+    
+    if col_save.button("💾 Aplicar Alterações de Estoque", type="primary", key=f"save_btn_{key_suffix}"):
+        if not client:
+            st.error("Conecte-se à Shopee primeiro.")
+            return
+
+        # Processa alterações
+        changes_count = 0
+        errors = []
+        
+        with st.status("Processando atualizações...", expanded=True) as status:
+            for index, row in edited_df.iterrows():
+                new_val = row["Novo Estoque"]
+                if pd.isna(new_val) or new_val is None or str(new_val).strip() == "":
+                    continue
+                
+                group_id = row["group_id"]
+                new_stock = int(new_val)
+                
+                # Encontra o grupo original
+                group = next((g for g in groups if g["group_id"] == group_id), None)
+                if not group: continue
+
+                status.write(f"Atualizando '{group['master_name']}' para {new_stock}...")
+                
+                # Lógica de update (copiada do original)
+                per_item = {}
+                for it in group.get("items", []):
+                    item_id = int(it.get("item_id"))
+                    model_id = int(it.get("model_id")) if it.get("model_id") is not None else None
+                    per_item.setdefault(item_id, []).append(model_id)
+
+                for item_id, model_ids in per_item.items():
+                    try:
+                        client.update_stock(item_id=item_id, model_ids=model_ids, new_stock=new_stock)
+                        
+                        # Atualiza cache local
+                        for mid in model_ids:
+                            # Atualiza session state cache
+                            for m in st.session_state["models_cache"]:
+                                m_mid = int(m.get("model_id")) if m.get("model_id") is not None else None
+                                if int(m.get("item_id")) == item_id and m_mid == mid:
+                                    m["normal_stock"] = new_stock
+
+                        changes_count += 1
+                    except Exception as e:
+                        errors.append(f"{group['master_name']}: {e}")
+            
+            if errors:
+                status.update(label="Concluído com erros", state="error")
+                for e in errors: st.error(e)
+            else:
+                status.update(label="Atualização concluída!", state="complete")
+        
+        if changes_count > 0:
+            st.success(f"Sucesso! {changes_count} grupos atualizados.")
+            time.sleep(1)
+            st.rerun()
+
+
+def view_replenishment():
+    """View: Itens Esgotados (Para Reposição)."""
+    st.header("📦 Para Reposição (Esgotados)")
+    st.caption("Lista de produtos com estoque zerado.")
+    
+    client: Optional[ShopeeClient] = st.session_state.get("client")
+    models_cache: List[Dict[str, Any]] = st.session_state.get("models_cache", [])
+    groups = load_groups()
+
+    if not groups:
+        st.info("Nenhum grupo criado.")
+        return
+
+    # Mapa de estoque atual
+    stock_map = {} 
+    for m in models_cache:
+        mid = int(m.get("model_id")) if m.get("model_id") is not None else None
+        stock_map[(int(m.get("item_id")), mid)] = m.get("normal_stock", 0)
+
+    # Prepara dados filtrados
+    table_data = []
+    for g in groups:
+        g_stocks = []
+        for it in g.get("items", []):
+            mid = int(it.get("model_id")) if it.get("model_id") is not None else None
+            s = stock_map.get((int(it.get("item_id")), mid))
+            if s is not None: g_stocks.append(s)
+        
+        curr_stock = int(sum(g_stocks)/len(g_stocks)) if g_stocks else 0
+        
+        # FILTRO: Apenas estoque 0
+        if curr_stock == 0:
+            table_data.append({
+                "group_id": g.get("group_id"),
+                "Nome do Grupo": g.get("master_name"),
+                "Variações": len(g.get("items", [])),
+                "Estoque Atual": curr_stock,
+                "Novo Estoque": None 
+            })
+
+    if not table_data:
+        st.success("Nenhum produto esgotado! 🎉")
+        return
+
+    df = pd.DataFrame(table_data)
+    _render_inventory_table(df, groups, client, key_suffix="replenish")
+
+
 def view_dashboard():
     """View: Dashboard e Gestão de Estoque."""
     st.header("Visão Geral de Estoque")
@@ -2194,98 +2336,7 @@ def view_dashboard():
     st.subheader("Atualização em Massa")
     st.caption("Edite a coluna 'Novo Estoque' e clique em Salvar no final da página.")
 
-    edited_df = st.data_editor(
-        df,
-        column_config={
-            "group_id": None, # Esconde ID
-            "Nome do Grupo": st.column_config.TextColumn("Nome do Produto (Grupo)", width="large", disabled=True),
-            "Variações": st.column_config.NumberColumn("Qtd. Anúncios", disabled=True),
-            "Estoque Atual": st.column_config.ProgressColumn(
-                "Estoque Atual", 
-                format="%d", 
-                min_value=0, 
-                max_value=max(df["Estoque Atual"]) if not df.empty else 100,
-            ),
-            "Novo Estoque": st.column_config.NumberColumn(
-                "Novo Estoque (Editar)", 
-                min_value=0, 
-                step=1,
-                required=False
-            )
-        },
-        hide_index=True,
-        use_container_width=True,
-        key="inventory_editor"
-    )
-
-    # Botão de Salvar
-    st.markdown("<br>", unsafe_allow_html=True)
-    col_save, _ = st.columns([1, 4])
-    
-    if col_save.button("💾 Aplicar Alterações de Estoque", type="primary"):
-        if not client:
-            st.error("Conecte-se à Shopee primeiro.")
-            return
-
-        # Processa alterações
-        updates = []
-        # Compara edited_df com original (table_data) ou apenas itera sobre edited_df
-        # O data_editor retorna o dataframe com os valores editados.
-        # Filtramos onde "Novo Estoque" não é NaN/None
-        
-        changes_count = 0
-        errors = []
-        
-        with st.status("Processando atualizações...", expanded=True) as status:
-            for index, row in edited_df.iterrows():
-                new_val = row["Novo Estoque"]
-                if pd.isna(new_val) or new_val is None or str(new_val).strip() == "":
-                    continue
-                
-                group_id = row["group_id"]
-                new_stock = int(new_val)
-                
-                # Encontra o grupo original
-                group = next((g for g in groups if g["group_id"] == group_id), None)
-                if not group: continue
-
-                status.write(f"Atualizando '{group['master_name']}' para {new_stock}...")
-                
-                # Lógica de update (copiada do original)
-                per_item = {}
-                for it in group.get("items", []):
-                    item_id = int(it.get("item_id"))
-                    model_id = int(it.get("model_id")) if it.get("model_id") is not None else None
-                    per_item.setdefault(item_id, []).append(model_id)
-
-                for item_id, model_ids in per_item.items():
-                    try:
-                        client.update_stock(item_id=item_id, model_ids=model_ids, new_stock=new_stock)
-                        
-                        # Atualiza cache local
-                        for mid in model_ids:
-                            key = (item_id, mid)
-                            # Atualiza stock_map local para refletir na UI se não der refresh
-                            stock_map[key] = new_stock
-                            # Tenta atualizar session state cache
-                            # (Lógica simplificada - ideal seria recarregar tudo, mas para UX rápida atualizamos local)
-                            for m in st.session_state["models_cache"]:
-                                m_mid = int(m.get("model_id")) if m.get("model_id") is not None else None
-                                if int(m.get("item_id")) == item_id and m_mid == mid:
-                                    m["normal_stock"] = new_stock
-
-                        changes_count += 1
-                    except Exception as e:
-                        errors.append(f"{group['master_name']}: {e}")
-            
-            if errors:
-                status.update(label="Concluído com erros", state="error")
-                for e in errors: st.error(e)
-            else:
-                status.update(label="Atualização concluída!", state="complete")
-        
-        if changes_count > 0:
-            st.success(f"Sucesso! {changes_count} grupos atualizados.")
+    _render_inventory_table(df, groups, client, key_suffix="dashboard")
             time.sleep(1)
             st.rerun()
         elif not errors:
@@ -2484,7 +2535,7 @@ def main():
         
         page = st.radio(
             "Menu", 
-            ["📊 Dashboard", "🧩 Mapeamento", "⚙️ Configurações"],
+            ["📊 Dashboard", "📦 Para Reposição", "🧩 Mapeamento", "⚙️ Configurações"],
             index=0,
             label_visibility="collapsed"
         )
@@ -2522,6 +2573,8 @@ def main():
     # Roteamento de Páginas
     if page == "📊 Dashboard":
         view_dashboard()
+    elif page == "📦 Para Reposição":
+        view_replenishment()
     elif page == "🧩 Mapeamento":
         view_mapping()
     elif page == "⚙️ Configurações":
