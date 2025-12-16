@@ -14,6 +14,7 @@ import requests
 import pandas as pd
 import streamlit as st
 from difflib import SequenceMatcher
+from supabase import create_client, Client
 
 
 # ==========================
@@ -159,27 +160,40 @@ def _remote_save_groups(groups: List[Dict[str, Any]]) -> None:
 # Utilidades de Persistência Local (JSON)
 # ==========================
 
-def load_groups() -> List[Dict[str, Any]]:
-    """Carrega grupos de produtos a partir de um arquivo JSON local.
+def _get_supabase_client() -> Optional[Client]:
+    """Retorna cliente Supabase se configurado (Secrets, Env ou Hardcoded fallback)."""
+    url = st.secrets.get("SUPABASE_URL") or os.environ.get("SUPABASE_URL")
+    key = st.secrets.get("SUPABASE_KEY") or os.environ.get("SUPABASE_KEY")
+    
+    # Fallback com as credenciais fornecidas (idealmente mover para st.secrets em prod)
+    if not url:
+        url = "https://kptxikvuwuyqhpszcaup.supabase.co"
+    if not key:
+        key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwdHhpa3Z1d3V5cWhwc3pjYXVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU4OTgwMDgsImV4cCI6MjA4MTQ3NDAwOH0.SeawBT8uein7ZIzAj-ZlfBaVJuH1mkGij3cEW5WvmgA"
 
-    Estrutura base (por grupo):
-    {
-        "group_id": str,
-        "master_name": str,
-        "items": [
-            {
-                "item_id": int,
-                "model_id": Optional[int],
-                "item_name": str,
-                "model_name": str,
-            },
-            ...
-        ],
-        "shopee_item_ids": [int, ...],
-        "shopee_model_ids": [int, ...]
-    }
-    """
-    # Se configurado, usa backend remoto (para Streamlit Cloud / persistência fora do FS).
+    if url and key:
+        try:
+            return create_client(url, key)
+        except Exception:
+            return None
+    return None
+
+
+def load_groups() -> List[Dict[str, Any]]:
+    """Carrega grupos de produtos (Supabase > Local)."""
+    # 1. Tenta Supabase
+    sb = _get_supabase_client()
+    if sb:
+        try:
+            response = sb.table("razai_storage").select("value").eq("key", "groups").execute()
+            if response.data and len(response.data) > 0:
+                data = response.data[0]["value"]
+                return _parse_groups_payload(data)
+        except Exception:
+            # Silenciosamente falha para local se der erro (ex: offline)
+            pass
+
+    # Se configurado, usa backend remoto (legacy)
     if _groups_remote_config():
         return _remote_load_groups()
 
@@ -196,13 +210,24 @@ def load_groups() -> List[Dict[str, Any]]:
 
 
 def save_groups(groups: List[Dict[str, Any]]) -> None:
-    """Salva grupos de produtos no arquivo JSON local."""
-    # Se configurado, salva no backend remoto.
+    """Salva grupos de produtos (Supabase + Local)."""
+    payload = {"groups": groups}
+
+    # 1. Tenta Supabase (Upsert)
+    sb = _get_supabase_client()
+    if sb:
+        try:
+            data = {"key": "groups", "value": payload}
+            sb.table("razai_storage").upsert(data).execute()
+        except Exception as e:
+            print(f"Erro ao salvar no Supabase: {e}")
+
+    # Se configurado, salva no backend remoto (legacy)
     if _groups_remote_config():
         _remote_save_groups(groups)
         return
 
-    payload = {"groups": groups}
+    # 2. Salva Local
     with open(GROUPS_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
