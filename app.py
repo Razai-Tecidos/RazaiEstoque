@@ -1025,8 +1025,8 @@ class ShopeeClient:
         Ver docs: Product > Get Item List (Shopee Open Platform v2).
         """
         if item_status is None:
-            # Status típicos: NORMAL, UNLIST, BANNED; ajustável conforme necessidade
-            item_status = ["NORMAL", "UNLIST"]
+            # Apenas itens ativos (NORMAL). UNLIST = inativos, BANNED = banidos
+            item_status = ["NORMAL"]
 
         # Path completo incluindo "/api/v2" conforme docs de Product > Get Item List
         path = "/api/v2/product/get_item_list"
