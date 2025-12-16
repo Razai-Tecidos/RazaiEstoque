@@ -233,7 +233,17 @@ def save_groups(groups: List[Dict[str, Any]]) -> None:
 
 
 def load_tokens() -> Dict[str, Any]:
-    """Carrega tokens persistidos (tokens.json)."""
+    """Carrega tokens persistidos (Supabase > tokens.json)."""
+    # 1. Tenta Supabase
+    sb = _get_supabase_client()
+    if sb:
+        try:
+            response = sb.table("razai_storage").select("value").eq("key", "tokens").execute()
+            if response.data and len(response.data) > 0:
+                return response.data[0]["value"]
+        except Exception:
+            pass
+
     if not os.path.exists(TOKENS_FILE):
         return {}
     try:
@@ -244,13 +254,27 @@ def load_tokens() -> Dict[str, Any]:
 
 
 def save_tokens(tokens: Dict[str, Any]) -> None:
-    """Salva tokens em tokens.json."""
+    """Salva tokens (Supabase + tokens.json)."""
+    # 1. Tenta Supabase (Upsert)
+    sb = _get_supabase_client()
+    if sb:
+        try:
+            data = {"key": "tokens", "value": tokens}
+            sb.table("razai_storage").upsert(data).execute()
+        except Exception as e:
+            print(f"Erro ao salvar tokens no Supabase: {e}")
+
+    # 2. Salva Local
     with open(TOKENS_FILE, "w", encoding="utf-8") as f:
         json.dump(tokens, f, ensure_ascii=False, indent=2)
 
 
 def git_persist_data() -> str:
     """Salva groups.json e tokens.json no repositório Git local (commit + push)."""
+    # Se Supabase estiver ativo, ignoramos o Git para evitar erros de SSH/Auth
+    if _get_supabase_client():
+        return "Persistência via Supabase ativa. Git ignorado."
+
     files_to_add = []
     if os.path.exists(GROUPS_FILE):
         files_to_add.append(GROUPS_FILE)
@@ -286,6 +310,10 @@ def git_persist_data() -> str:
 
 def git_pull_data() -> str:
     """Atualiza o repositório local com as mudanças do remoto (git pull)."""
+    # Se Supabase estiver ativo, ignoramos o Git para evitar erros de SSH/Auth
+    if _get_supabase_client():
+        return "Persistência via Supabase ativa. Git Pull ignorado."
+
     try:
         subprocess.run(["git", "pull"], check=True, capture_output=True)
         return "Sucesso: Repositório atualizado do GitHub!"
@@ -407,9 +435,13 @@ def refresh_group_names_from_models_cache(
                     col = extract_color_from_model(mname, iname)
                     if fab:
                         # Monta nome: "Viscolinho" + " " + "Folhagem Azul"
-                        parts = [_titleize_words(fab)]
-                        if col and col != "(Sem cor)":
-                            parts.append(_titleize_words(col))
+                        fab_clean = _titleize_words(fab)
+                        col_clean = _titleize_words(col) if col and col != "(Sem cor)" else ""
+                        
+                        parts = [fab_clean]
+                        # Só adiciona a cor se ela NÃO estiver contida no nome do tecido/título
+                        if col_clean and col_clean.lower() not in fab_clean.lower():
+                            parts.append(col_clean)
                         
                         candidate = " ".join(parts).strip()
                         if len(candidate) > len(best_new_name):
@@ -1547,6 +1579,11 @@ def extract_fabric_from_title(title: str) -> str:
         deduped.append(t)
 
     s = " ".join(deduped).strip()
+    
+    # Remove conectivos soltos no final (ex: "Azul e")
+    if s.endswith(" e"):
+        s = s[:-2].strip()
+        
     return s
 
 
@@ -2318,6 +2355,15 @@ def view_dashboard():
                     fresh = build_models_cache(client)
                     st.session_state["models_cache"] = fresh
                     st.session_state["last_sync_ts"] = int(time.time())
+                    
+                    # --- AUTO REPAIR NAMES ---
+                    groups = load_groups()
+                    updated_groups, count = refresh_group_names_from_models_cache(groups, fresh)
+                    if count > 0:
+                        save_groups(updated_groups)
+                        st.toast(f"Nomes corrigidos em {count} itens!", icon="✨")
+                    # -------------------------
+                    
                 st.rerun()
             else:
                 st.error("Conecte-se primeiro.")
@@ -2464,21 +2510,46 @@ def view_settings():
     st.divider()
     st.subheader("Backup e Persistência")
     
-    c_git1, c_git2 = st.columns(2)
-    if c_git1.button("☁️ Salvar Dados no GitHub"):
-        with st.spinner("Salvando..."):
-            msg = git_persist_data()
-            if "Sucesso" in msg: st.success(msg)
-            else: st.warning(msg)
-            
-    if c_git2.button("⬇️ Baixar Dados do GitHub"):
-        with st.spinner("Baixando..."):
-            msg = git_pull_data()
-            if "Sucesso" in msg: 
-                st.success(msg)
-                time.sleep(1)
-                st.rerun()
-            else: st.warning(msg)
+    sb_client = _get_supabase_client()
+    if sb_client:
+        st.success("✅ Persistência via Supabase Ativa (Cloud)")
+        st.caption("Seus dados (grupos e tokens) são salvos automaticamente na nuvem.")
+        
+        with st.expander("Opções Legacy (Git)"):
+            st.caption("Use apenas se souber o que está fazendo.")
+            c_git1, c_git2 = st.columns(2)
+            if c_git1.button("☁️ Salvar Dados no GitHub"):
+                with st.spinner("Salvando..."):
+                    msg = git_persist_data()
+                    if "Sucesso" in msg: st.success(msg)
+                    else: st.warning(msg)
+                    
+            if c_git2.button("⬇️ Baixar Dados do GitHub"):
+                with st.spinner("Baixando..."):
+                    msg = git_pull_data()
+                    if "Sucesso" in msg: 
+                        st.success(msg)
+                        time.sleep(1)
+                        st.rerun()
+                    else: st.warning(msg)
+
+    else:
+        st.warning("⚠️ Supabase não detectado. Usando armazenamento local/Git.")
+        c_git1, c_git2 = st.columns(2)
+        if c_git1.button("☁️ Salvar Dados no GitHub"):
+            with st.spinner("Salvando..."):
+                msg = git_persist_data()
+                if "Sucesso" in msg: st.success(msg)
+                else: st.warning(msg)
+                
+        if c_git2.button("⬇️ Baixar Dados do GitHub"):
+            with st.spinner("Baixando..."):
+                msg = git_pull_data()
+                if "Sucesso" in msg: 
+                    st.success(msg)
+                    time.sleep(1)
+                    st.rerun()
+                else: st.warning(msg)
 
     # --- Importar / Exportar JSON ---
     st.divider()
@@ -2607,6 +2678,15 @@ def main():
                          st.session_state["client"] = client
                          st.session_state["models_cache"] = cache
                          st.session_state["last_sync_ts"] = int(time.time())
+                         
+                         # --- AUTO REPAIR NAMES ---
+                         groups = load_groups()
+                         updated_groups, count = refresh_group_names_from_models_cache(groups, cache)
+                         if count > 0:
+                             save_groups(updated_groups)
+                             st.toast(f"Nomes corrigidos em {count} itens!", icon="✨")
+                         # -------------------------
+                         
                      st.toast("Sincronização concluída!", icon="✅")
                  except Exception as e:
                      st.toast(f"Erro: {e}", icon="❌")
