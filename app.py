@@ -2511,8 +2511,7 @@ def main():
         /* Remove padding excessivo do topo */
         .block-container { padding-top: 1.5rem; padding-bottom: 3rem; }
         
-        /* Esconde header padrão e footer */
-        header { visibility: hidden; }
+        /* Esconde footer apenas (mantém header para acesso ao menu lateral) */
         footer { visibility: hidden; }
         
         /* Sidebar mais limpa */
