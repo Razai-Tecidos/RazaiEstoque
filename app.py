@@ -922,8 +922,13 @@ class ShopeeClient:
         if not model_ids or all(m is None for m in model_ids):
             body["stock"] = new_stock
         else:
+            # Para variações, stock_list exige seller_stock como LISTA de objetos.
+            # Erro anterior: json: cannot unmarshal number into Go struct field ... type []*StockByLocation
             stock_list = [
-                {"model_id": int(mid), "seller_stock": int(new_stock)}
+                {
+                    "model_id": int(mid),
+                    "seller_stock": [{"stock": int(new_stock)}]
+                }
                 for mid in model_ids
                 if mid is not None
             ]
