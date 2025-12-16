@@ -272,9 +272,6 @@ def git_pull_data() -> str:
 
 
 def _validate_imported_groups_payload(payload: Any) -> List[Dict[str, Any]]:
-
-
-def _validate_imported_groups_payload(payload: Any) -> List[Dict[str, Any]]:
     """Valida minimamente um payload de importação de grupos.
 
     Aceita:
