@@ -2727,6 +2727,8 @@ def main():
                          # -------------------------
                          
                      st.toast("Sincronização concluída!", icon="✅")
+                     time.sleep(0.5)
+                     st.rerun()  # Recarrega para mostrar nomes corrigidos
                  except Exception as e:
                      st.toast(f"Erro: {e}", icon="❌")
              else:
