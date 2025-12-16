@@ -2303,7 +2303,11 @@ def _render_inventory_table(df: pd.DataFrame, groups: List[Dict], client: Option
 
                 for item_id, model_ids in per_item.items():
                     try:
-                        client.update_stock(item_id=item_id, model_ids=model_ids, new_stock=new_stock)
+                        result = client.update_stock(item_id=item_id, model_ids=model_ids, new_stock=new_stock)
+                        
+                        # DEBUG: Mostra response da API
+                        st.info(f"📡 API Response para item_id={item_id}, model_ids={model_ids}:")
+                        st.json(result)
                         
                         # Atualiza cache local
                         for mid in model_ids:
