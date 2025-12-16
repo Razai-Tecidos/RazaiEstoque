@@ -1941,7 +1941,10 @@ def tab_mapping():
         )
 
         # Atualiza imediatamente a visão removendo os modelos recém-agrupados
-        st.experimental_rerun()
+        try:
+            st.rerun()
+        except Exception:
+            st.experimental_rerun()
 
 
 def tab_inventory():
