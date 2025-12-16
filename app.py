@@ -2638,32 +2638,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    st.title("Sistema de Gestão de Estoque Unificado (IMS) - Shopee")
-
-    st.markdown(
-        """
-        Este painel foi projetado para lojistas de **tecidos** na Shopee que
-        possuem **múltiplos anúncios para o mesmo produto físico** (estratégia de SEO).
-
-        - A **Aba 1 (Mapeamento)** é o "cérebro" onde você agrupa variações da Shopee
-          em **Grupos Mestres**.
-        - A **Aba 2 (Gestão de Estoque)** mostra apenas os **Grupos Mestres** e permite
-          atualizar o estoque de todos os anúncios vinculados de uma só vez
-          (via `v2.product.update_stock`, conforme documentação da Shopee Open Platform).
-        """
-    )
-
-    init_session_state()
-    sidebar_setup()
-
-    tab1, tab2 = st.tabs(["Mapeamento de Produtos", "Gestão de Estoque"])
-
-    with tab1:
-        tab_mapping()
-
-    with tab2:
-        tab_inventory()
-
-
-if __name__ == "__main__":
-    main()
