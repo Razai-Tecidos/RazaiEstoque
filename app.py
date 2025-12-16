@@ -858,6 +858,64 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
             continue
         base_by_id[iid] = bi
 
+    def _extract_stock_from_base_info(bi: Dict[str, Any]) -> Tuple[Optional[int], Dict[int, Optional[int]]]:
+        """Tenta extrair estoque do item e por model_id a partir do get_item_base_info.
+
+        A Shopee pode variar campos por região/versão; fazemos melhor esforço.
+        Retorna (item_stock, {model_id: stock}).
+        """
+        item_stock: Optional[int] = None
+        model_stock: Dict[int, Optional[int]] = {}
+
+        for k in ("stock", "normal_stock", "seller_stock"):
+            if k in bi:
+                item_stock = _to_int_or_none(bi.get(k))
+                if item_stock is not None:
+                    break
+
+        # Listas possíveis de modelos no base_info
+        candidate_lists: List[Any] = []
+        for lk in ("model_list", "models", "model"):
+            v = bi.get(lk)
+            if isinstance(v, list):
+                candidate_lists.append(v)
+
+        # Estruturas aninhadas comuns
+        for nk in ("stock_info", "stock_info_v2", "inventory", "item_stock_info"):
+            nv = bi.get(nk)
+            if isinstance(nv, dict):
+                for lk in ("model", "model_list", "models"):
+                    v = nv.get(lk)
+                    if isinstance(v, list):
+                        candidate_lists.append(v)
+
+        for lst in candidate_lists:
+            for m in lst or []:
+                if not isinstance(m, dict):
+                    continue
+                mid = m.get("model_id")
+                if mid is None:
+                    continue
+                try:
+                    mid_int = int(mid)
+                except Exception:
+                    continue
+                for k in ("normal_stock", "stock", "seller_stock"):
+                    if k in m:
+                        model_stock[mid_int] = _to_int_or_none(m.get(k))
+                        break
+                # Estruturas aninhadas por model
+                for nk in ("stock_info", "stock_info_v2", "inventory"):
+                    nv = m.get(nk)
+                    if isinstance(nv, dict):
+                        for k in ("normal_stock", "stock", "seller_stock"):
+                            iv = _to_int_or_none(nv.get(k))
+                            if iv is not None:
+                                model_stock[mid_int] = iv
+                                break
+
+        return item_stock, model_stock
+
     def _item_title(bi: Dict[str, Any]) -> str:
         for k in ("item_name", "name", "title"):
             v = bi.get(k)
@@ -902,6 +960,7 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
             continue
         item_id = int(item.get("item_id"))
         bi = base_by_id.get(item_id, {})
+        bi_item_stock, bi_model_stock = _extract_stock_from_base_info(bi)
 
         item_name = _item_title(bi) or str(item.get("item_name") or "")
         fabric_key = extract_fabric_from_title(item_name)
@@ -918,6 +977,11 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
                 model_id = m.get("model_id")
                 model_name = m.get("model_name", "")
                 normal_stock = _extract_model_stock(m)
+                if normal_stock is None and model_id is not None:
+                    try:
+                        normal_stock = bi_model_stock.get(int(model_id))
+                    except Exception:
+                        pass
                 display_name = f"{item_name} - {model_name}" if model_name else item_name
 
                 color_key = extract_color_from_model(str(model_name or ""), item_name)
@@ -950,6 +1014,8 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
                 or _to_int_or_none(item.get("stock"))
                 or _to_int_or_none(item.get("normal_stock"))
             )
+            if normal_stock is None:
+                normal_stock = bi_item_stock
             display_name = item_name
 
             # Sem model_name, então o curto fica basicamente o tecido
@@ -2162,7 +2228,8 @@ def tab_inventory():
                     fresh_cache = build_models_cache(client)
                 st.session_state["models_cache"] = fresh_cache
                 st.session_state["last_sync_ts"] = int(time.time())
-                st.success(f"Estoque recarregado. Modelos: {len(fresh_cache)}")
+                with_stock = sum(1 for m in fresh_cache if m.get("normal_stock") is not None)
+                st.success(f"Estoque recarregado. Modelos: {len(fresh_cache)} | Com estoque: {with_stock}")
                 st.rerun()
             except Exception as exc:  # noqa: BLE001
                 st.error(f"Falha ao recarregar estoque: {exc}")
@@ -2180,10 +2247,18 @@ def tab_inventory():
         )
 
     # Índice rápido para obter estoque atual de cada (item_id, model_id)
+    def _norm_mid(mid: Any) -> Optional[int]:
+        if mid is None:
+            return None
+        try:
+            return int(mid)
+        except Exception:
+            return None
+
     stock_index: Dict[Tuple[int, Optional[int]], Optional[int]] = {}
     cache_positions: Dict[Tuple[int, Optional[int]], List[int]] = {}
     for idx, m in enumerate(models_cache):
-        key = (int(m.get("item_id")), m.get("model_id"))
+        key = (int(m.get("item_id")), _norm_mid(m.get("model_id")))
         stock_index[key] = m.get("normal_stock")
         cache_positions.setdefault(key, []).append(idx)
 
@@ -2235,7 +2310,7 @@ def tab_inventory():
             # Calcula soma/média usando o índice de estoque
             stocks: List[int] = []
             for it in items:
-                key = (int(it.get("item_id")), it.get("model_id"))
+                key = (int(it.get("item_id")), _norm_mid(it.get("model_id")))
                 s = stock_index.get(key)
                 if s is not None:
                     stocks.append(int(s))
@@ -2301,7 +2376,7 @@ def tab_inventory():
             per_item: Dict[int, List[Optional[int]]] = {}
             for it in g.get("items", []):
                 item_id = int(it.get("item_id"))
-                model_id = it.get("model_id")
+                model_id = _norm_mid(it.get("model_id"))
                 per_item.setdefault(item_id, []).append(model_id)
 
             for item_id, model_ids in per_item.items():
