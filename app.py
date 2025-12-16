@@ -1359,6 +1359,19 @@ def extract_fabric_from_title(title: str) -> str:
     if s.startswith("kit "):
         s = s[4:].strip()
 
+    # Marcadores de corte (normalizados) para limpar sufixos de marketing/medidas
+    # Ex: "cetim charmousse 1,50m largura..." -> "cetim charmousse"
+    cut_markers = [
+        " 1,50m", " 1.50m", " 1,5m", " 1.5m", " 3,00m", " 3m",
+        " largura", " larg",
+        " + barato", " mais barato",
+        " promocao", " oferta",
+        " envio imediato", " pronta entrega",
+    ]
+    for marker in cut_markers:
+        if marker in s:
+            s = s.split(marker, 1)[0].strip()
+
     # Remove palavras muito genéricas que atrapalham agrupamento
     junk_words = {
         "metro",
