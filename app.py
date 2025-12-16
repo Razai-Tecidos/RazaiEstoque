@@ -757,7 +757,15 @@ class ShopeeClient:
         for prefix, obj in candidates:
             if not isinstance(obj, dict):
                 continue
-            for k in ("normal_stock", "stock", "seller_stock", "stock_info", "stock_info_v2", "inventory"):
+            for k in (
+                "normal_stock",
+                "stock",
+                "seller_stock",
+                "shopee_stock",
+                "stock_info",
+                "stock_info_v2",
+                "inventory",
+            ):
                 if k in obj:
                     stock_fields_found.append(f"{prefix}.{k}")
 
@@ -853,7 +861,7 @@ class ShopeeClient:
         - Se model_ids for None ou contiver apenas None, aplica estoque no nível do item.
         - Caso contrário, envia stock_list para cada model_id.
 
-        Ver docs: Product > Update Stock (Shopee Open Platform v2).
+        Observação (docs v2): esta API atualiza o **seller_stock**.
         """
         # Path completo incluindo "/api/v2" conforme docs de Update Stock
         path = "/api/v2/product/update_stock"
@@ -864,7 +872,7 @@ class ShopeeClient:
             body["stock"] = new_stock
         else:
             stock_list = [
-                {"model_id": int(mid), "normal_stock": int(new_stock)}
+                {"model_id": int(mid), "seller_stock": int(new_stock)}
                 for mid in model_ids
                 if mid is not None
             ]
@@ -920,9 +928,53 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
         item_stock: Optional[int] = None
         model_stock: Dict[int, Optional[int]] = {}
 
-        for k in ("stock", "normal_stock", "seller_stock"):
+        def _sum_location_stock(v: Any) -> Optional[int]:
+            """Soma estoque quando Shopee retorna listas por location.
+
+            Formato típico (docs):
+              seller_stock: [{location_id: str, stock: int, if_saleable: bool?}, ...]
+              shopee_stock: [{location_id: str, stock: int}, ...]
+
+            Regra: soma `stock` de entradas `if_saleable=True` quando presente.
+            """
+            if not isinstance(v, list):
+                return None
+            total = 0
+            found = False
+            for row in v:
+                if not isinstance(row, dict):
+                    continue
+                if row.get("if_saleable") is False:
+                    continue
+                stock_val = _to_int_or_none(row.get("stock"))
+                if stock_val is None:
+                    continue
+                total += stock_val
+                found = True
+            return total if found else None
+
+        def _stock_value_from_any(v: Any) -> Optional[int]:
+            iv = _to_int_or_none(v)
+            if iv is not None:
+                return iv
+            summed = _sum_location_stock(v)
+            if summed is not None:
+                return summed
+            # Alguns payloads podem trazer dict com chaves internas
+            if isinstance(v, dict):
+                for kk in ("seller_stock", "normal_stock", "stock", "shopee_stock"):
+                    if kk in v:
+                        iv2 = _to_int_or_none(v.get(kk))
+                        if iv2 is not None:
+                            return iv2
+                        summed2 = _sum_location_stock(v.get(kk))
+                        if summed2 is not None:
+                            return summed2
+            return None
+
+        for k in ("stock", "normal_stock", "seller_stock", "shopee_stock"):
             if k in bi:
-                item_stock = _to_int_or_none(bi.get(k))
+                item_stock = _stock_value_from_any(bi.get(k))
                 if item_stock is not None:
                     break
 
@@ -953,16 +1005,16 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
                     mid_int = int(mid)
                 except Exception:
                     continue
-                for k in ("normal_stock", "stock", "seller_stock"):
+                for k in ("normal_stock", "stock", "seller_stock", "shopee_stock"):
                     if k in m:
-                        model_stock[mid_int] = _to_int_or_none(m.get(k))
+                        model_stock[mid_int] = _stock_value_from_any(m.get(k))
                         break
                 # Estruturas aninhadas por model
                 for nk in ("stock_info", "stock_info_v2", "inventory"):
                     nv = m.get(nk)
                     if isinstance(nv, dict):
-                        for k in ("normal_stock", "stock", "seller_stock"):
-                            iv = _to_int_or_none(nv.get(k))
+                        for k in ("normal_stock", "stock", "seller_stock", "shopee_stock"):
+                            iv = _stock_value_from_any(nv.get(k))
                             if iv is not None:
                                 model_stock[mid_int] = iv
                                 break
