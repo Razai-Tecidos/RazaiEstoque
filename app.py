@@ -2074,6 +2074,13 @@ def sidebar_setup() -> None:
     )
 
     if st.sidebar.button("Sincronizar Dados da Shopee"):
+        # Recupera valores da sessão para garantir que temos o mais atual
+        partner_id = st.session_state.get("partner_id")
+        partner_key = st.session_state.get("partner_key")
+        shop_id = st.session_state.get("shop_id")
+        access_token = st.session_state.get("access_token")
+        api_base_url = st.session_state.get("api_base_url")
+
         # 1. Tenta atualizar grupos do Git antes de tudo
         with st.spinner("Verificando atualizações de grupos (Git)..."):
             git_msg = git_pull_data()
