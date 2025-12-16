@@ -388,6 +388,34 @@ def refresh_group_names_from_models_cache(
             new_items.append(it2)
 
         g2["items"] = new_items
+        
+        # Tenta atualizar o master_name se ele parecer truncado (termina com " e")
+        # ou se for muito curto e tivermos sugestão melhor
+        current_master = str(g2.get("master_name") or "").strip()
+        if current_master.endswith(" e") or len(current_master.split()) <= 3:
+            # Tenta reconstruir sugestão baseada nos itens atualizados
+            temp_models = []
+            for it in new_items:
+                temp_models.append({
+                    "item_name": it.get("item_name", ""),
+                    "model_name": it.get("model_name", "")
+                })
+            
+            if temp_models:
+                # Usa a lógica de sugestão (que agora usa extract_color_from_model corrigido indiretamente ou suggest_master_name)
+                # suggest_master_name usa _find_first e monta partes.
+                # Mas o problema relatado era na sugestão automática que usa extract_color_from_model.
+                # Se o master_name foi gerado via sugestão automática, ele pode estar ruim.
+                # Vamos tentar regenerar via suggest_master_name que é mais robusto para nomes finais,
+                # OU podemos tentar re-extrair se for o caso.
+                
+                # Aqui usamos suggest_master_name que é a função de "fallback" inteligente
+                new_suggestion = suggest_master_name(temp_models)
+                
+                # Se a nova sugestão for mais longa e parecer válida, substitui
+                if new_suggestion and len(new_suggestion) > len(current_master):
+                    g2["master_name"] = new_suggestion
+                    updated_count += 1
 
         # Recalcula shopee_item_ids/model_ids para manter consistência
         try:
