@@ -865,6 +865,36 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
                 return str(v)
         return ""
 
+    def _to_int_or_none(v: Any) -> Optional[int]:
+        if v is None:
+            return None
+        try:
+            # Algumas respostas podem trazer como string
+            return int(v)
+        except Exception:
+            try:
+                return int(float(v))
+            except Exception:
+                return None
+
+    def _extract_model_stock(model: Dict[str, Any]) -> Optional[int]:
+        # Campos mais comuns
+        for k in ("normal_stock", "stock", "seller_stock"):
+            if k in model:
+                iv = _to_int_or_none(model.get(k))
+                if iv is not None:
+                    return iv
+
+        # Alguns payloads podem aninhar info de estoque
+        for k in ("stock_info", "stock_info_v2", "inventory"):
+            nested = model.get(k)
+            if isinstance(nested, dict):
+                for kk in ("normal_stock", "stock", "seller_stock"):
+                    iv = _to_int_or_none(nested.get(kk))
+                    if iv is not None:
+                        return iv
+        return None
+
     models_cache: List[Dict[str, Any]] = []
 
     for item in items:
@@ -887,7 +917,7 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
             for m in models:
                 model_id = m.get("model_id")
                 model_name = m.get("model_name", "")
-                normal_stock = m.get("normal_stock")
+                normal_stock = _extract_model_stock(m)
                 display_name = f"{item_name} - {model_name}" if model_name else item_name
 
                 color_key = extract_color_from_model(str(model_name or ""), item_name)
@@ -914,7 +944,12 @@ def build_models_cache(client: ShopeeClient) -> List[Dict[str, Any]]:
                 )
         else:
             # Item sem variações: tratamos como um "modelo único" com model_id=None
-            normal_stock = bi.get("stock") or bi.get("normal_stock") or item.get("stock") or item.get("normal_stock")
+            normal_stock = (
+                _to_int_or_none(bi.get("stock"))
+                or _to_int_or_none(bi.get("normal_stock"))
+                or _to_int_or_none(item.get("stock"))
+                or _to_int_or_none(item.get("normal_stock"))
+            )
             display_name = item_name
 
             # Sem model_name, então o curto fica basicamente o tecido
@@ -2146,9 +2181,11 @@ def tab_inventory():
 
     # Índice rápido para obter estoque atual de cada (item_id, model_id)
     stock_index: Dict[Tuple[int, Optional[int]], Optional[int]] = {}
-    for m in models_cache:
+    cache_positions: Dict[Tuple[int, Optional[int]], List[int]] = {}
+    for idx, m in enumerate(models_cache):
         key = (int(m.get("item_id")), m.get("model_id"))
         stock_index[key] = m.get("normal_stock")
+        cache_positions.setdefault(key, []).append(idx)
 
     st.markdown("**Grupos Mestres cadastrados (organizados por tecido):**")
 
@@ -2187,7 +2224,7 @@ def tab_inventory():
         header_cols = st.columns([3, 2, 3, 2])
         header_cols[0].markdown("**Nome Mestre**")
         header_cols[1].markdown("**Qtd Itens Vinculados**")
-        header_cols[2].markdown("**Estoque Atual (Soma/Média)**")
+        header_cols[2].markdown("**Estoque Atual (Média)**")
         header_cols[3].markdown("**Novo Estoque**")
 
         # Campos de entrada (um por grupo)
@@ -2204,9 +2241,9 @@ def tab_inventory():
                     stocks.append(int(s))
 
             if stocks:
-                soma = sum(stocks)
-                media = soma / len(stocks)
-                estoque_str = f"Soma={soma} | Média={media:.1f}"
+                media = sum(stocks) / len(stocks)
+                # Mostra como inteiro quando faz sentido
+                estoque_str = f"{media:.1f}" if abs(media - round(media)) > 1e-9 else f"{int(round(media))}"
             else:
                 estoque_str = "-"
 
@@ -2271,6 +2308,28 @@ def tab_inventory():
                 try:
                     client.update_stock(item_id=item_id, model_ids=model_ids, new_stock=new_stock)
                     total_success += len(model_ids) if any(m is not None for m in model_ids) else 1
+
+                    # Atualiza cache local para refletir o novo estoque imediatamente.
+                    if not model_ids or all(m is None for m in model_ids):
+                        # Estoque no nível do item (model_id=None)
+                        key = (int(item_id), None)
+                        stock_index[key] = int(new_stock)
+                        for pos in cache_positions.get(key, []):
+                            try:
+                                st.session_state["models_cache"][pos]["normal_stock"] = int(new_stock)
+                            except Exception:
+                                pass
+                    else:
+                        for mid in model_ids:
+                            if mid is None:
+                                continue
+                            key = (int(item_id), int(mid))
+                            stock_index[key] = int(new_stock)
+                            for pos in cache_positions.get(key, []):
+                                try:
+                                    st.session_state["models_cache"][pos]["normal_stock"] = int(new_stock)
+                                except Exception:
+                                    pass
                 except Exception as exc:  # noqa: BLE001
                     # Não interromper todo o processamento; apenas registrar o erro
                     errors.append(
