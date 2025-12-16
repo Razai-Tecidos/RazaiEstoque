@@ -366,8 +366,14 @@ def _validate_imported_groups_payload(payload: Any) -> List[Dict[str, Any]]:
 def refresh_group_names_from_models_cache(
     groups: List[Dict[str, Any]],
     models_cache: List[Dict[str, Any]],
+    auto_update_names: bool = False,
 ) -> Tuple[List[Dict[str, Any]], int]:
     """Atualiza item_name/model_name dentro dos grupos com base no cache atual.
+
+    Args:
+        groups: Lista de grupos existentes
+        models_cache: Cache fresco dos modelos da Shopee
+        auto_update_names: Se True, sempre regenera o master_name baseado nos dados atuais
 
     Mantém o vínculo por IDs (item_id + model_id). Retorna (groups_atualizados, qtd_itens_atualizados).
     """
@@ -417,12 +423,15 @@ def refresh_group_names_from_models_cache(
 
         g2["items"] = new_items
         
-        # Tenta atualizar o master_name se ele parecer truncado (termina com " e")
-        # ou se for muito curto e tivermos sugestão melhor
+        # Atualiza o master_name baseado nos dados frescos
         current_master = str(g2.get("master_name") or "").strip()
         
-        # Condição de reparo: termina com " e" OU é curto demais
-        if current_master.endswith(" e") or len(current_master.split()) <= 3:
+        # Condição de reparo: 
+        # - auto_update_names=True: SEMPRE regenera
+        # - Caso contrário: só se termina com " e" ou é muito curto
+        should_update = auto_update_names or current_master.endswith(" e") or len(current_master.split()) <= 3
+        
+        if should_update:
             
             # 1. Tenta extração robusta usando dados FRESCOS do models_cache (via index)
             best_new_name = ""
@@ -2369,12 +2378,13 @@ def view_dashboard():
                     st.session_state["models_cache"] = fresh
                     st.session_state["last_sync_ts"] = int(time.time())
                     
-                    # --- AUTO REPAIR NAMES ---
+                    # --- AUTO REPAIR/UPDATE NAMES ---
                     groups = load_groups()
-                    updated_groups, count = refresh_group_names_from_models_cache(groups, fresh)
+                    auto_update = st.session_state.get("auto_update_group_names", False)
+                    updated_groups, count = refresh_group_names_from_models_cache(groups, fresh, auto_update_names=auto_update)
                     if count > 0:
                         save_groups(updated_groups)
-                        st.toast(f"Nomes corrigidos em {count} itens!", icon="✨")
+                        st.toast(f"Nomes atualizados: {count}!", icon="✨")
                     # -------------------------
                     
                 st.rerun()
@@ -2600,6 +2610,44 @@ def view_settings():
             except Exception as e:
                 st.error(f"Erro: {e}")
 
+    # --- Atualização de Nomes ---
+    st.divider()
+    st.subheader("Nomes dos Grupos")
+    
+    # Toggle para modo automático
+    auto_update = st.toggle(
+        "🔄 Atualizar nomes automaticamente",
+        value=st.session_state.get("auto_update_group_names", False),
+        help="Quando ativo, os nomes dos grupos são regenerados automaticamente a cada sincronização, "
+             "baseado nos dados atuais da Shopee (tecido + cor da variação)."
+    )
+    st.session_state["auto_update_group_names"] = auto_update
+    
+    if auto_update:
+        st.info("📌 A cada sincronização, os nomes dos grupos serão atualizados automaticamente.")
+    
+    # Botão manual para regenerar todos os nomes
+    st.caption("Ou regenere manualmente todos os nomes agora:")
+    
+    col_regen1, col_regen2 = st.columns([1, 2])
+    if col_regen1.button("🔧 Regenerar Todos os Nomes", type="secondary", use_container_width=True):
+        client = st.session_state.get("client")
+        models_cache = st.session_state.get("models_cache", [])
+        
+        if not client or not models_cache:
+            st.error("Sincronize com a Shopee primeiro (clique em '🔄 Sincronizar Agora').")
+        else:
+            with st.spinner("Regenerando nomes..."):
+                groups = load_groups()
+                updated_groups, count = refresh_group_names_from_models_cache(groups, models_cache, auto_update_names=True)
+                if count > 0:
+                    save_groups(updated_groups)
+                    st.success(f"✅ {count} nomes atualizados!")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.info("Nenhum nome foi alterado.")
+
 
 def main():
     st.set_page_config(page_title="IMS Shopee - Tecidos", layout="wide", page_icon="📦")
@@ -2692,12 +2740,13 @@ def main():
                          st.session_state["models_cache"] = cache
                          st.session_state["last_sync_ts"] = int(time.time())
                          
-                         # --- AUTO REPAIR NAMES ---
+                         # --- AUTO REPAIR/UPDATE NAMES ---
                          groups = load_groups()
-                         updated_groups, count = refresh_group_names_from_models_cache(groups, cache)
+                         auto_update = st.session_state.get("auto_update_group_names", False)
+                         updated_groups, count = refresh_group_names_from_models_cache(groups, cache, auto_update_names=auto_update)
                          if count > 0:
                              save_groups(updated_groups)
-                             st.toast(f"Nomes corrigidos em {count} itens!", icon="✨")
+                             st.toast(f"Nomes atualizados: {count}!", icon="✨")
                          # -------------------------
                          
                      st.toast("Sincronização concluída!", icon="✅")
