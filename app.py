@@ -2158,6 +2158,15 @@ def sidebar_setup() -> None:
     )
 
     if st.sidebar.button("Sincronizar Dados da Shopee"):
+        # 1. Tenta atualizar grupos do Git antes de tudo
+        with st.spinner("Verificando atualizações de grupos (Git)..."):
+            git_msg = git_pull_groups()
+            if "Sucesso" in git_msg:
+                st.toast("Grupos atualizados do GitHub!", icon="✅")
+            elif "Erro" in git_msg:
+                # Apenas avisa, não bloqueia (pode ser ambiente sem git ou offline)
+                st.toast(f"Git Pull: {git_msg}", icon="⚠️")
+
         if not (partner_id and partner_key and shop_id and access_token):
             st.sidebar.error("Preencha todas as credenciais antes de sincronizar.")
         else:
