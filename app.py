@@ -716,6 +716,59 @@ class ShopeeClient:
 
         return data
 
+    def preflight_read_check(self, sample_item_id: Optional[int] = None) -> Dict[str, Any]:
+        """Faz um teste de requisição (somente leitura) antes de operações sensíveis.
+
+        Objetivo: detectar cedo problemas de credencial/host/permissão e também
+        entender se a API está devolvendo estoque nos campos esperados.
+
+        Retorna um resumo com:
+        - sample_item_id
+        - item_base_info_keys
+        - model_keys (primeiro model)
+        - stock_fields_found (quais campos de estoque aparecem)
+        """
+        # 1) Descobrir um item para testar
+        if sample_item_id is None:
+            items = self.get_item_list()
+            if not items:
+                raise RuntimeError("Preflight: get_item_list retornou vazio")
+            try:
+                sample_item_id = int(items[0].get("item_id"))
+            except Exception:
+                raise RuntimeError("Preflight: item_id inválido no get_item_list")
+
+        # 2) Base info (título + possivelmente estoque)
+        base_list = self.get_item_base_info([int(sample_item_id)])
+        bi = base_list[0] if base_list else {}
+        bi_keys = sorted(list(bi.keys())) if isinstance(bi, dict) else []
+
+        # 3) Model list (possivelmente estoque)
+        models = self.get_model_list(int(sample_item_id))
+        first_model = models[0] if models else {}
+        model_keys = sorted(list(first_model.keys())) if isinstance(first_model, dict) else []
+
+        # 4) Descobrir campos que parecem estoque
+        stock_fields_found: List[str] = []
+        candidates = [
+            ("base", bi),
+            ("model", first_model),
+        ]
+        for prefix, obj in candidates:
+            if not isinstance(obj, dict):
+                continue
+            for k in ("normal_stock", "stock", "seller_stock", "stock_info", "stock_info_v2", "inventory"):
+                if k in obj:
+                    stock_fields_found.append(f"{prefix}.{k}")
+
+        return {
+            "sample_item_id": int(sample_item_id),
+            "item_base_info_keys": bi_keys,
+            "model_keys": model_keys,
+            "stock_fields_found": stock_fields_found,
+            "model_count": len(models) if isinstance(models, list) else None,
+        }
+
     # ---------- Endpoints de produto ----------
 
     def get_item_list(self, item_status: Optional[List[str]] = None) -> List[Dict[str, Any]]:
@@ -2236,6 +2289,36 @@ def tab_inventory():
 
     col_hint.caption("Dica: isso atualiza os números de estoque exibidos abaixo.")
 
+    # Teste rápido (somente leitura) para ajudar debug de estoque/credenciais
+    with st.expander("Teste de requisição (somente leitura)"):
+        st.caption(
+            "Roda um preflight na Shopee para verificar se o app consegue ler itens/models e se a resposta contém campos de estoque. "
+            "Isso não altera nada na loja."
+        )
+        if st.button("Executar teste de requisição"):
+            if not client:
+                st.error("Cliente Shopee não inicializado. Configure e sincronize na barra lateral.")
+            else:
+                try:
+                    # Preferir testar usando um item que exista nos grupos (mais relevante)
+                    groups_for_test = load_groups()
+                    sample_item_id = None
+                    for g in groups_for_test:
+                        items = g.get("items", []) or []
+                        if items:
+                            try:
+                                sample_item_id = int(items[0].get("item_id"))
+                                break
+                            except Exception:
+                                continue
+
+                    with st.spinner("Executando preflight de leitura..."):
+                        info = client.preflight_read_check(sample_item_id=sample_item_id)
+                    st.success("Teste OK. Veja detalhes:")
+                    st.json(info)
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Teste falhou: {exc}")
+
     groups = load_groups()
     if not groups:
         st.info("Nenhum grupo mestre criado ainda. Use a Aba 1 para criar.")
@@ -2338,6 +2421,31 @@ def tab_inventory():
         if not client:
             st.error(
                 "Cliente Shopee não inicializado. Configure credenciais e sincronize na barra lateral."
+            )
+            return
+
+        # Preflight (somente leitura) antes de atualizar, para evitar operação cega.
+        try:
+            groups_for_test = groups
+            sample_item_id = None
+            for g in groups_for_test:
+                items = g.get("items", []) or []
+                if items:
+                    try:
+                        sample_item_id = int(items[0].get("item_id"))
+                        break
+                    except Exception:
+                        continue
+            _preflight = client.preflight_read_check(sample_item_id=sample_item_id)
+            st.info(
+                "Preflight OK (somente leitura). "
+                f"Item testado: {_preflight.get('sample_item_id')} | "
+                f"Campos de estoque detectados: {', '.join(_preflight.get('stock_fields_found') or []) or '(nenhum)'}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            st.error(
+                "Não vou atualizar estoque porque o teste de requisição falhou. "
+                f"Detalhes: {exc}"
             )
             return
 
