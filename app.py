@@ -6,6 +6,7 @@ import uuid
 import hashlib
 import urllib.parse
 import unicodedata
+import re
 from typing import Dict, Any, List, Optional, Tuple
 
 import requests
@@ -1036,6 +1037,10 @@ def extract_color_from_model(model_name: str, item_name: str = "") -> str:
 
     s = _norm_text(raw)
 
+    # Remove padrões de metragem mesmo quando grudados via vírgula/espaco.
+    # Exemplos comuns: "0,50m", "2m", "vermelho,2m", "azul 3m".
+    s = re.sub(r"[, ]?\b\d+(?:[.,]\d+)?m\b", "", s).strip()
+
     # Se vier algo como "Branco Neve | 1m" ou "Azul - 2m", tentamos pegar a parte "mais textual".
     for sep in ("|", "/", "-", "–"):
         if sep in s:
@@ -1047,6 +1052,9 @@ def extract_color_from_model(model_name: str, item_name: str = "") -> str:
                         s = p
                         break
 
+    # Remove palavras que aparecem junto de tamanho/combos e não são parte da cor
+    junk_words = {"por", "metro", "metros", "m", "kit"}
+
     tokens = []
     for t in s.split():
         tt = t.replace(".", ",")
@@ -1057,7 +1065,14 @@ def extract_color_from_model(model_name: str, item_name: str = "") -> str:
                 continue
         if tt.replace(",", "").isdigit():
             continue
-        tokens.append(t)
+        if tt in junk_words:
+            continue
+
+        # Remove casos ainda grudados (ex.: "vermelho,2m")
+        t2 = re.sub(r"\b\d+(?:[.,]\d+)?m\b", "", tt).strip(" ,")
+        if not t2:
+            continue
+        tokens.append(t2)
 
     s = " ".join(tokens).strip()
     return s
